@@ -1796,6 +1796,8 @@ export default function App() {
                                 onUpdate={(updated) => setCoverLetter(updated)}
                                 onRegenerate={handleGenerateCoverLetter}
                                 isRegenerating={generatingCoverLetter}
+                                aiConfig={aiConfig}
+                                selectedModel={selectedModel}
                               />
                             ) : (
                               <div className="text-center py-12 space-y-4">
@@ -1907,6 +1909,8 @@ export default function App() {
                           onUpdate={(updated) => setCoverLetter(updated)}
                           onRegenerate={handleGenerateCoverLetter}
                           isRegenerating={generatingCoverLetter}
+                          aiConfig={aiConfig}
+                          selectedModel={selectedModel}
                         />
                       ) : (
                         <div className="text-center py-12 space-y-4">

@@ -864,6 +864,56 @@ Output the fully translated JSON object.
   }
 });
 
+// REST API endpoint to translate a cover letter (mirrors /api/translate-resume)
+app.post("/api/translate-cover-letter", standardAiLimiter, requireServerKey, validateBody(schemas.translateCoverLetterSchema), async (req, res) => {
+  try {
+    const { coverLetter, targetLanguage, model, aiConfig } = req.body;
+    const langName = targetLanguage === 'fr' ? 'French' : 'English';
+
+    const prompt = `
+Translate the following JSON cover letter data into ${langName}.
+Maintain the exact same JSON structure, keys, and array length for bodyParagraphs.
+Translate all textual fields naturally and professionally, adapting tone/idiom to the target language rather than translating word-for-word. Do not translate the sender's or recipient's personal names.
+
+Cover Letter:
+${JSON.stringify(coverLetter, null, 2)}
+
+Output the fully translated JSON object.
+`;
+
+    const response = await generateContentWithRetry({
+      model: model || "gemini-3.5-flash",
+      contents: prompt,
+      config: {
+        responseMimeType: "application/json",
+        responseSchema: {
+          type: Type.OBJECT,
+          properties: {
+            subject: { type: Type.STRING },
+            recipientCompany: { type: Type.STRING },
+            recipientName: { type: Type.STRING },
+            salutation: { type: Type.STRING },
+            introduction: { type: Type.STRING },
+            bodyParagraphs: { type: Type.ARRAY, items: { type: Type.STRING } },
+            conclusion: { type: Type.STRING },
+            signOff: { type: Type.STRING },
+            senderName: { type: Type.STRING }
+          },
+          required: ["subject", "recipientCompany", "recipientName", "salutation", "introduction", "bodyParagraphs", "conclusion", "signOff", "senderName"]
+        },
+        systemInstruction: "You are an expert professional translator specializing in business correspondence. Translate cover letters flawlessly, preserving tone and persuasive intent."
+      },
+      aiConfig
+    });
+
+    const data = safeJsonParse(response.text);
+    res.json({ translatedCoverLetter: data });
+  } catch (error: any) {
+    console.error("Translate cover letter error:", error);
+    res.status(500).json({ error: error.message || "An error occurred during cover letter translation" });
+  }
+});
+
 // REST API endpoint to tailor the resume
 app.post("/api/tailor", expensiveAiLimiter, requireServerKey, validateBody(schemas.tailorSchema), async (req, res) => {
   try {

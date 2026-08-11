@@ -168,6 +168,25 @@ export const networkingSuggestionsSchema = z.object({
   aiConfig: aiConfigSchema,
 });
 
+const coverLetterDataSchema = z.object({
+  subject: z.string().max(MAX_SHORT),
+  recipientCompany: z.string().max(MAX_SHORT),
+  recipientName: z.string().max(MAX_SHORT),
+  salutation: z.string().max(MAX_SHORT),
+  introduction: z.string().max(MAX_TEXT),
+  bodyParagraphs: z.array(z.string().max(MAX_TEXT)).max(20),
+  conclusion: z.string().max(MAX_TEXT),
+  signOff: z.string().max(MAX_SHORT),
+  senderName: z.string().max(MAX_SHORT),
+});
+
+export const translateCoverLetterSchema = z.object({
+  coverLetter: coverLetterDataSchema,
+  targetLanguage: z.string().min(1).max(50),
+  model: modelField,
+  aiConfig: aiConfigSchema,
+});
+
 export const parseEmailInterviewSchema = z
   .object({
     emailSnippet: z.string().max(MAX_TEXT).optional(),
