@@ -1,4 +1,4 @@
-import express from "express";
+import express, { NextFunction, Request, Response } from "express";
 import path from "path";
 import { createServer as createViteServer } from "vite";
 import { GoogleGenAI, Type } from "@google/genai";
@@ -8,8 +8,25 @@ import puppeteer from "puppeteer-core";
 import chromium from "@sparticuz/chromium";
 import fs from "fs";
 import os from "os";
+import { initializeApp, getApps } from "firebase-admin/app";
+import { getAuth, type DecodedIdToken } from "firebase-admin/auth";
+import firebaseAppletConfig from "./firebase-applet-config.json" with { type: "json" };
 
 dotenv.config();
+
+declare global {
+  namespace Express {
+    interface Request {
+      user?: DecodedIdToken;
+    }
+  }
+}
+
+// ID token verification only needs the project's public certs, not a full
+// service account key, so this is safe to initialize unconditionally.
+if (!getApps().length) {
+  initializeApp({ projectId: firebaseAppletConfig.projectId });
+}
 
 const app = express();
 const PORT = 3000;
@@ -31,6 +48,39 @@ app.use((req, res, next) => {
   }
   next();
 });
+
+// Verifies a Firebase ID token if present and attaches req.user. Never rejects —
+// unauthenticated requests fall through to requireServerKey, which decides
+// per-route whether a signed-in user or a BYO API key is required.
+async function attachUser(req: Request, res: Response, next: NextFunction) {
+  const authHeader = req.headers.authorization;
+  if (authHeader && authHeader.startsWith('Bearer ')) {
+    const token = authHeader.slice('Bearer '.length).trim();
+    try {
+      req.user = await getAuth().verifyIdToken(token);
+    } catch (err) {
+      console.error('[Auth] Failed to verify ID token:', err instanceof Error ? err.message : err);
+    }
+  }
+  next();
+}
+app.use(attachUser);
+
+// Gate for routes that call the AI provider and therefore cost money.
+// Signed-in users may use the server's own Gemini key; guests must supply
+// their own key via the x-gemini-key header (already folded into
+// req.body.aiConfig.apiKey by the middleware above).
+function requireServerKey(req: Request, res: Response, next: NextFunction) {
+  const hasOwnKey = Boolean(req.body?.aiConfig?.apiKey && String(req.body.aiConfig.apiKey).trim() !== '');
+  if (!req.user && !hasOwnKey) {
+    return res.status(401).json({
+      error: 'Sign in or provide your own AI API key in Settings to use this feature.',
+      code: 'AUTH_OR_KEY_REQUIRED',
+      statusCode: 401,
+    });
+  }
+  next();
+}
 
 // Lazy initialize Gemini client to prevent startup crash if key is missing
 let aiInstance: GoogleGenAI | null = null;
@@ -562,7 +612,7 @@ async function generateContentWithRetry(params: {
 }
 
 // REST API endpoint to analyze a job URL and extract missing skills
-app.post("/api/analyze-job-url", async (req, res) => {
+app.post("/api/analyze-job-url", requireServerKey, async (req, res) => {
   try {
     const { jobUrl, masterResume, model, aiConfig } = req.body;
 
@@ -609,7 +659,7 @@ Output the result as a JSON object: { "missingSkills": string[] }
 });
 
 // REST API endpoint to score and analyze resume impact
-app.post("/api/score-resume", async (req, res) => {
+app.post("/api/score-resume", requireServerKey, async (req, res) => {
   try {
     const { masterResume, model, aiConfig } = req.body;
 
@@ -662,7 +712,7 @@ Output the result as a JSON object: { "score": number, "suggestions": string[] }
 });
 
 // REST API endpoint to translate master resume
-app.post("/api/translate-resume", async (req, res) => {
+app.post("/api/translate-resume", requireServerKey, async (req, res) => {
   try {
     const { masterResume, targetLanguage, model, aiConfig } = req.body;
 
@@ -793,7 +843,7 @@ Output the fully translated JSON object.
 });
 
 // REST API endpoint to tailor the resume
-app.post("/api/tailor", async (req, res) => {
+app.post("/api/tailor", requireServerKey, async (req, res) => {
   try {
     const { masterResume, jobDescription, jobUrl, language, optimizeForRelocation, model, aiConfig } = req.body;
     if (!jobDescription && !jobUrl) {
@@ -1043,7 +1093,7 @@ ${JSON.stringify(masterResume, null, 2)}
 });
 
 // REST API endpoint to generate a cover letter
-app.post("/api/cover-letter", async (req, res) => {
+app.post("/api/cover-letter", requireServerKey, async (req, res) => {
   try {
     const { tailoredResume, jobDescription, language, model, aiConfig } = req.body;
 
@@ -1122,7 +1172,7 @@ ${JSON.stringify(tailoredResume, null, 2)}
 });
 
 // REST API endpoint to parse PDF or DOCX resume using Gemini
-app.post("/api/parse-resume", async (req, res) => {
+app.post("/api/parse-resume", requireServerKey, async (req, res) => {
   try {
     const { base64Data, fileType, model, aiConfig } = req.body;
 
@@ -1282,7 +1332,7 @@ app.post("/api/parse-resume", async (req, res) => {
 });
 
 // REST API endpoint to run a deep search for jobs using Gemini and Google Search Grounding
-app.post("/api/jobs-deep-search", async (req, res) => {
+app.post("/api/jobs-deep-search", requireServerKey, async (req, res) => {
   try {
     const { query, location, masterResume, useResume, supportsRelocation, jobType, salaryExpectation, remoteStatus, model, aiConfig } = req.body;
 
@@ -1415,7 +1465,7 @@ Output your response as a JSON object matching: {"query": "string", "location": 
 });
 
 // REST API endpoint to improve an individual resume achievement bullet point using Gemini AI
-app.post("/api/improve-bullet", async (req, res) => {
+app.post("/api/improve-bullet", requireServerKey, async (req, res) => {
   try {
     const { bulletText, jobDescription, model, aiConfig } = req.body;
 
@@ -1502,7 +1552,7 @@ function findLocalChromeOrEdgePath(): string | null {
 }
 
 // REST API endpoint to generate ATS-safe PDF
-app.post("/api/generate-pdf", async (req, res) => {
+app.post("/api/generate-pdf", requireServerKey, async (req, res) => {
   try {
     const { htmlContent } = req.body;
     if (!htmlContent) {
@@ -1545,7 +1595,7 @@ app.post("/api/generate-pdf", async (req, res) => {
 });
 
 // REST API endpoint to generate interview preparation questions & strategies using Gemini AI
-app.post("/api/interview-prep", async (req, res) => {
+app.post("/api/interview-prep", requireServerKey, async (req, res) => {
   try {
     const { resumeData, jobDescription, model, aiConfig } = req.body;
 
@@ -1621,7 +1671,7 @@ Provide your output in a structured JSON matching the specified responseSchema. 
 });
 
 // REST API endpoint to analyze draft mock interview answers and provide score and constructive feedback
-app.post("/api/interview-feedback", async (req, res) => {
+app.post("/api/interview-feedback", requireServerKey, async (req, res) => {
   try {
     const { question, userAnswer, jobDescription, model, aiConfig } = req.body;
 
@@ -1685,7 +1735,7 @@ Provide your feedback in structured JSON matching the specified responseSchema:
 });
 
 // REST API endpoint to suggest networking opportunities adapted for the role and CV
-app.post("/api/networking-suggestions", async (req, res) => {
+app.post("/api/networking-suggestions", requireServerKey, async (req, res) => {
   try {
     const { tailoredResume, jobDescription, model, aiConfig } = req.body;
     if (!tailoredResume) {
@@ -1759,7 +1809,7 @@ Generate valid JSON adhering strictly to the response schema.`;
 });
 
 // REST API endpoint to parse email messages to find interview invitations
-app.post("/api/parse-email-interview", async (req, res) => {
+app.post("/api/parse-email-interview", requireServerKey, async (req, res) => {
   try {
     const { emailSnippet, emailBody, model, aiConfig } = req.body;
     if (!emailBody && !emailSnippet) {
