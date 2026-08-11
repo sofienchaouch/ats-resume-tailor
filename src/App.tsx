@@ -40,19 +40,32 @@ import { getMasterResume, saveMasterResume, getHistory, saveHistory, getJobAppli
 import { localDb } from './utils/localDb';
 import { apiFetch } from './utils/apiClient';
 import { useToast } from './components/Toast';
-import AtsDashboard from './components/AtsDashboard';
-import ResumePreview from './components/ResumePreview';
-import CoverLetterPreview from './components/CoverLetterPreview';
-import ResumeDiffView from './components/ResumeDiffView';
+import { lazy, Suspense } from 'react';
 import ResumeVersionSwitcher from './components/ResumeVersionSwitcher';
 import AchievementBank from './components/AchievementBank';
-import InterviewPrepCoach from './components/InterviewPrepCoach';
-import MasterResumeWizard from './components/MasterResumeWizard';
-import JobsDeepSearch from './components/JobsDeepSearch';
 import TargetSpecifications from './components/TargetSpecifications';
-import ApplicationIntegrationsHub from './components/ApplicationIntegrationsHub';
-import ApplicationTracker from './components/ApplicationTracker';
 import LandingPage from './components/LandingPage';
+
+// Lazily loaded: each is only needed once the user reaches a specific view/tab,
+// so none of them should be in the initial bundle the landing page waits on.
+const AtsDashboard = lazy(() => import('./components/AtsDashboard'));
+const ResumePreview = lazy(() => import('./components/ResumePreview'));
+const CoverLetterPreview = lazy(() => import('./components/CoverLetterPreview'));
+const ResumeDiffView = lazy(() => import('./components/ResumeDiffView'));
+const InterviewPrepCoach = lazy(() => import('./components/InterviewPrepCoach'));
+const MasterResumeWizard = lazy(() => import('./components/MasterResumeWizard'));
+const JobsDeepSearch = lazy(() => import('./components/JobsDeepSearch'));
+const ApplicationIntegrationsHub = lazy(() => import('./components/ApplicationIntegrationsHub'));
+const ApplicationTracker = lazy(() => import('./components/ApplicationTracker'));
+
+// Minimal, dependency-free fallback — deliberately not another heavy component.
+function ViewLoadingFallback() {
+  return (
+    <div className="flex items-center justify-center py-24">
+      <div className="w-6 h-6 border-2 border-indigo-500 border-t-transparent rounded-full animate-spin" />
+    </div>
+  );
+}
 
 // Helper to validate and clean up imported resume JSON
 const validateAndCleanResumeData = (parsed: any): ResumeData => {
@@ -1585,6 +1598,7 @@ export default function App() {
 
       {/* Main Container */}
       <main className="flex-grow max-w-7xl w-full mx-auto p-4 md:py-8 grid grid-cols-1 gap-6 print:p-0">
+      <Suspense fallback={<ViewLoadingFallback />}>
         <AnimatePresence mode="wait">
           {/* 1. LOADING OVERLAY */}
           {loading && (
@@ -2213,6 +2227,7 @@ export default function App() {
             </motion.div>
           )}
         </AnimatePresence>
+      </Suspense>
       </main>
 
       {/* App Footer */}
