@@ -1,0 +1,49 @@
+<!DOCTYPE html>
+<html>
+<head>
+  <meta charset="UTF-8" />
+  <title>ATS Resume Tailor</title>
+  <style>
+    body {
+      width: 260px;
+      margin: 0;
+      padding: 16px;
+      font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+      background: #ffffff;
+      color: #0f172a;
+    }
+    h1 {
+      font-size: 13px;
+      font-weight: 800;
+      margin: 0 0 4px;
+    }
+    p {
+      font-size: 11px;
+      color: #64748b;
+      margin: 0 0 12px;
+      line-height: 1.4;
+    }
+    button {
+      width: 100%;
+      background: #4f46e5;
+      color: white;
+      border: none;
+      border-radius: 8px;
+      padding: 10px 12px;
+      font-size: 12px;
+      font-weight: 700;
+      cursor: pointer;
+    }
+    button:hover { background: #4338ca; }
+    button:disabled { background: #cbd5e1; cursor: default; }
+    #status { font-size: 10px; color: #94a3b8; margin-top: 8px; text-align: center; }
+  </style>
+</head>
+<body>
+  <h1>ATS Resume Tailor</h1>
+  <p>Capture this job posting's URL and open it in ATS Resume Tailor, pre-filled and ready to tailor.</p>
+  <button id="captureBtn">Tailor My Resume For This Job</button>
+  <div id="status"></div>
+  <script src="popup.js"></script>
+</body>
+</html>

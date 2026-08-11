@@ -211,6 +211,21 @@ export default function App() {
   // Input States
   const [jobDescription, setJobDescription] = useState('');
   const [jobUrl, setJobUrl] = useState('');
+
+  // Handoff point for the browser extension (extension/): its popup captures
+  // the current tab's URL and opens the app with ?jobUrl=<url>. Read once on
+  // mount and clear the param so a refresh doesn't keep re-triggering it.
+  useEffect(() => {
+    const params = new URLSearchParams(window.location.search);
+    const incomingJobUrl = params.get('jobUrl');
+    if (incomingJobUrl) {
+      setJobUrl(incomingJobUrl);
+      setCurrentView('editor');
+      params.delete('jobUrl');
+      const newSearch = params.toString();
+      window.history.replaceState({}, '', window.location.pathname + (newSearch ? `?${newSearch}` : ''));
+    }
+  }, []);
   const [targetLanguage, setTargetLanguage] = useState<'en' | 'fr'>('en');
   const [optimizeForRelocation, setOptimizeForRelocation] = useState(false);
   const [targetCompany, setTargetCompany] = useState('');

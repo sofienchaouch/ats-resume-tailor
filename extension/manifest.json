@@ -1,0 +1,11 @@
+{
+  "manifest_version": 3,
+  "name": "ATS Resume Tailor — Job Capture",
+  "version": "1.0.0",
+  "description": "One-click capture of the job posting you're viewing, sent straight into ATS Resume Tailor for tailoring.",
+  "permissions": ["activeTab", "storage"],
+  "action": {
+    "default_popup": "popup.html",
+    "default_title": "Tailor my resume for this job"
+  }
+}
