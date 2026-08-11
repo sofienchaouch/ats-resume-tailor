@@ -41,7 +41,7 @@ function handleFirestoreError(error: unknown, operationType: OperationType, path
 }
 
 // Helper to recursively remove undefined properties from an object so Firestore won't reject it
-function removeUndefined<T>(obj: T): T {
+export function removeUndefined<T>(obj: T): T {
   if (obj === undefined) {
     return null as any;
   }
