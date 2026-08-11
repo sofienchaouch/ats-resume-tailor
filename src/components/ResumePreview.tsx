@@ -7,6 +7,7 @@ import html2canvas from 'html2canvas';
 import SpellcheckField from './SpellcheckField';
 import { useToast } from './Toast';
 import { apiFetch, apiFetchBlob } from '../utils/apiClient';
+import { estimateResumeLength } from '../utils/pageEstimate';
 
 interface ResumePreviewProps {
   resumeData: ResumeData;
@@ -1110,6 +1111,22 @@ export default function ResumePreview({
     <div className="space-y-4 animate-fade-in" id="resume-preview-root">
       {/* Control panel (Hidden on actual print) */}
       <div className="flex flex-wrap items-center justify-between gap-3 bg-slate-50 dark:bg-slate-900 border border-slate-200/80 dark:border-slate-800 rounded-xl p-4 print:hidden" id="preview-controls">
+        {(() => {
+          const lengthEstimate = estimateResumeLength(resumeData);
+          const badgeColor =
+            lengthEstimate.status === 'long'
+              ? 'bg-amber-50 dark:bg-amber-950/40 text-amber-700 dark:text-amber-400 border-amber-200 dark:border-amber-900/50'
+              : 'bg-slate-100 dark:bg-slate-800 text-slate-600 dark:text-slate-400 border-slate-200 dark:border-slate-700';
+          return (
+            <div
+              className={`flex items-center gap-1.5 text-[10px] font-bold px-2.5 py-1 rounded-full border ${badgeColor} w-full sm:w-auto`}
+              title={lengthEstimate.message}
+              id="page-length-badge"
+            >
+              {lengthEstimate.wordCount} words · ~{lengthEstimate.estimatedPages} page{lengthEstimate.estimatedPages !== 1 ? 's' : ''}
+            </div>
+          );
+        })()}
         <div className="flex flex-wrap items-center gap-3" id="preview-left-actions">
           <button
             onClick={() => setIsEditing(!isEditing)}
