@@ -1,4 +1,4 @@
-import { useState, useEffect, FormEvent, ChangeEvent } from 'react';
+import { useState, useEffect, useRef, FormEvent, ChangeEvent } from 'react';
 import { motion, AnimatePresence } from 'motion/react';
 import {
   FileText,
@@ -36,7 +36,7 @@ import {
 import { sampleResumes } from './data/samples';
 import { ResumeData, TailorResponse, CoverLetterData, AiConfig } from './types';
 import { useAuth } from './AuthContext';
-import { getMasterResume, saveMasterResume, getHistory, saveHistory, getJobApplications, saveJobApplications, getAiConfig, saveAiConfig } from './db';
+import { getMasterResume, saveMasterResume, getHistory, saveHistory, getJobApplications, saveJobApplications, getAiConfig, saveAiConfig, migrateToSubcollections } from './db';
 import { localDb } from './utils/localDb';
 import { apiFetch } from './utils/apiClient';
 import { useToast } from './components/Toast';
@@ -288,27 +288,41 @@ export default function App() {
     };
 
     if (user) {
-      getMasterResume(user.uid).then(savedMaster => {
-        if (savedMaster) setMasterResume(savedMaster);
-      }).catch(e => console.error('Failed to parse saved master resume', e));
+      // One-time, idempotent fan-out of the legacy single-document schema into
+      // per-item subcollections (see src/db.ts). Fails open: if migration
+      // itself errors, still proceed to load whatever already exists rather
+      // than blocking the app.
+      migrateToSubcollections(user.uid).catch(e => console.error('Failed to migrate Firestore data to v2 schema', e)).finally(() => {
+        getMasterResume(user.uid).then(savedMaster => {
+          if (savedMaster) setMasterResume(savedMaster);
+        }).catch(e => console.error('Failed to parse saved master resume', e));
 
-      getHistory(user.uid).then(savedHistory => {
-        if (savedHistory) setHistoryList(savedHistory);
-      }).catch(e => console.error('Failed to parse tailored history', e));
+        getHistory(user.uid).then(savedHistory => {
+          if (savedHistory) setHistoryList(savedHistory);
+        }).catch(e => console.error('Failed to parse tailored history', e));
 
-      getAiConfig(user.uid).then(savedAiConfig => {
-        if (savedAiConfig) setAiConfig(savedAiConfig);
-      }).catch(e => console.error('Failed to parse saved AI config', e));
+        getAiConfig(user.uid).then(savedAiConfig => {
+          if (savedAiConfig) setAiConfig(savedAiConfig);
+        }).catch(e => console.error('Failed to parse saved AI config', e));
+      });
     } else {
       loadGuestData();
     }
   }, [user]);
 
-  // Save master resume on update
+  // Save master resume on update. The Firestore write is debounced (~1.5s)
+  // since this fires on every field edit and a full-document rewrite per
+  // keystroke isn't necessary; local state and guest storage stay immediate.
+  const saveMasterResumeTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
   const handleUpdateMaster = (updated: ResumeData) => {
     setMasterResume(updated);
     if (user) {
-      saveMasterResume(user.uid, updated);
+      if (saveMasterResumeTimer.current) {
+        clearTimeout(saveMasterResumeTimer.current);
+      }
+      saveMasterResumeTimer.current = setTimeout(() => {
+        saveMasterResume(user.uid, updated);
+      }, 1500);
     } else {
       localDb.setItem('ats_master_resume', updated);
     }

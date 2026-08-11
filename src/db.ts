@@ -1,5 +1,5 @@
 import { db, auth } from './firebase';
-import { doc, getDoc, setDoc } from 'firebase/firestore';
+import { doc, getDoc, setDoc, collection, getDocs, writeBatch } from 'firebase/firestore';
 import { ResumeData, TailorResponse } from './types';
 
 export enum OperationType {
@@ -61,22 +61,114 @@ export function removeUndefined<T>(obj: T): T {
   return result;
 }
 
-export const saveMasterResume = async (userId: string, data: ResumeData) => {
+// Schema v2: instead of one monolithic users/{uid} document holding
+// masterResume/historyList/jobApplications as fields (1MB document ceiling,
+// full-document rewrite on every save), those live in subcollections.
+// users/{uid} itself now holds only profile data (schemaVersion, aiConfig).
+export const SCHEMA_VERSION = 2;
+
+// A single "primary" resume today; users/{uid}/resumes/{resumeId} is a
+// subcollection so a future multi-version-resume feature can add more
+// documents here without another migration.
+const PRIMARY_RESUME_ID = 'primary';
+
+/**
+ * Upserts `items` (each needs a stable `id`) into users/{userId}/{subcollection}
+ * as one document per item, and deletes any existing docs there that are no
+ * longer present in `items`. Lets saveHistory/saveJobApplications keep their
+ * existing "pass the whole array" contract while storing each entry as its
+ * own small document instead of one array field shared with everything else.
+ */
+async function syncSubcollection(userId: string, subcollectionName: string, items: { id: string }[]) {
+  const colRef = collection(db, 'users', userId, subcollectionName);
+  const existingSnap = await getDocs(colRef);
+  const incomingIds = new Set(items.map((item) => String(item.id)));
+
+  const batch = writeBatch(db);
+  for (const item of items) {
+    if (!item?.id) continue;
+    batch.set(doc(colRef, String(item.id)), removeUndefined(item));
+  }
+  for (const existingDoc of existingSnap.docs) {
+    if (!incomingIds.has(existingDoc.id)) {
+      batch.delete(existingDoc.ref);
+    }
+  }
+  await batch.commit();
+}
+
+/**
+ * One-time, idempotent fan-out of the legacy monolithic users/{uid} document
+ * into the v2 subcollection shape. Safe to call on every sign-in: it's a
+ * no-op once users/{uid}.schemaVersion === SCHEMA_VERSION. Legacy fields are
+ * left in place (not deleted) as a safety net; they simply stop being read.
+ */
+export const migrateToSubcollections = async (userId: string): Promise<void> => {
   const path = `users/${userId}`;
   try {
+    const profileRef = doc(db, 'users', userId);
+    const profileSnap = await getDoc(profileRef);
+    const profileData = profileSnap.exists() ? profileSnap.data() : null;
+
+    if (profileData?.schemaVersion === SCHEMA_VERSION) {
+      return;
+    }
+
+    const batch = writeBatch(db);
+
+    if (profileData?.masterResume) {
+      batch.set(
+        doc(db, 'users', userId, 'resumes', PRIMARY_RESUME_ID),
+        { name: 'Master Resume', data: removeUndefined(profileData.masterResume), updatedAt: Date.now() },
+        { merge: true }
+      );
+    }
+
+    if (Array.isArray(profileData?.historyList)) {
+      for (const item of profileData.historyList) {
+        if (!item?.id) continue;
+        batch.set(doc(db, 'users', userId, 'history', String(item.id)), removeUndefined(item));
+      }
+    }
+
+    if (Array.isArray(profileData?.jobApplications)) {
+      for (const app of profileData.jobApplications) {
+        if (!app?.id) continue;
+        batch.set(
+          doc(db, 'users', userId, 'applications', String(app.id)),
+          removeUndefined({ ...app, resumeId: PRIMARY_RESUME_ID })
+        );
+      }
+    }
+
+    batch.set(profileRef, { schemaVersion: SCHEMA_VERSION }, { merge: true });
+
+    await batch.commit();
+  } catch (error) {
+    handleFirestoreError(error, OperationType.WRITE, path);
+  }
+};
+
+export const saveMasterResume = async (userId: string, data: ResumeData) => {
+  const path = `users/${userId}/resumes/${PRIMARY_RESUME_ID}`;
+  try {
     const sanitizedData = removeUndefined(data);
-    await setDoc(doc(db, 'users', userId), { masterResume: sanitizedData }, { merge: true });
+    await setDoc(
+      doc(db, 'users', userId, 'resumes', PRIMARY_RESUME_ID),
+      { name: 'Master Resume', data: sanitizedData, updatedAt: Date.now() },
+      { merge: true }
+    );
   } catch (error) {
     handleFirestoreError(error, OperationType.WRITE, path);
   }
 };
 
 export const getMasterResume = async (userId: string): Promise<ResumeData | null> => {
-  const path = `users/${userId}`;
+  const path = `users/${userId}/resumes/${PRIMARY_RESUME_ID}`;
   try {
-    const docSnap = await getDoc(doc(db, 'users', userId));
-    if (docSnap.exists() && docSnap.data().masterResume) {
-      return docSnap.data().masterResume as ResumeData;
+    const docSnap = await getDoc(doc(db, 'users', userId, 'resumes', PRIMARY_RESUME_ID));
+    if (docSnap.exists() && docSnap.data().data) {
+      return docSnap.data().data as ResumeData;
     }
     return null;
   } catch (error) {
@@ -86,23 +178,19 @@ export const getMasterResume = async (userId: string): Promise<ResumeData | null
 };
 
 export const saveHistory = async (userId: string, history: { id: string; timestamp: string; title: string; result: TailorResponse }[]) => {
-  const path = `users/${userId}`;
+  const path = `users/${userId}/history`;
   try {
-    const sanitizedHistory = removeUndefined(history);
-    await setDoc(doc(db, 'users', userId), { historyList: sanitizedHistory }, { merge: true });
+    await syncSubcollection(userId, 'history', history);
   } catch (error) {
     handleFirestoreError(error, OperationType.WRITE, path);
   }
 };
 
 export const getHistory = async (userId: string): Promise<any[] | null> => {
-  const path = `users/${userId}`;
+  const path = `users/${userId}/history`;
   try {
-    const docSnap = await getDoc(doc(db, 'users', userId));
-    if (docSnap.exists() && docSnap.data().historyList) {
-      return docSnap.data().historyList;
-    }
-    return null;
+    const snap = await getDocs(collection(db, 'users', userId, 'history'));
+    return snap.docs.map((d) => d.data());
   } catch (error) {
     handleFirestoreError(error, OperationType.GET, path);
     return null;
@@ -110,23 +198,19 @@ export const getHistory = async (userId: string): Promise<any[] | null> => {
 };
 
 export const saveJobApplications = async (userId: string, applications: any[]) => {
-  const path = `users/${userId}`;
+  const path = `users/${userId}/applications`;
   try {
-    const sanitizedApplications = removeUndefined(applications);
-    await setDoc(doc(db, 'users', userId), { jobApplications: sanitizedApplications }, { merge: true });
+    await syncSubcollection(userId, 'applications', applications);
   } catch (error) {
     handleFirestoreError(error, OperationType.WRITE, path);
   }
 };
 
 export const getJobApplications = async (userId: string): Promise<any[] | null> => {
-  const path = `users/${userId}`;
+  const path = `users/${userId}/applications`;
   try {
-    const docSnap = await getDoc(doc(db, 'users', userId));
-    if (docSnap.exists() && docSnap.data().jobApplications) {
-      return docSnap.data().jobApplications;
-    }
-    return null;
+    const snap = await getDocs(collection(db, 'users', userId, 'applications'));
+    return snap.docs.map((d) => d.data());
   } catch (error) {
     handleFirestoreError(error, OperationType.GET, path);
     return null;
