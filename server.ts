@@ -34,6 +34,14 @@ if (!getApps().length) {
 const app = express();
 const PORT = 3000;
 
+app.get('/health', (req, res) => {
+  res.json({
+    status: 'ok',
+    uptime: process.uptime(),
+    geminiConfigured: Boolean(process.env.GEMINI_API_KEY),
+  });
+});
+
 // Increase payload limit for larger resumes
 app.use(express.json({ limit: '10mb' }));
 
