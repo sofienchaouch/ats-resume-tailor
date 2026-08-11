@@ -90,6 +90,7 @@ export const getMasterResume = async (userId: string): Promise<ResumeData | null
     return null;
   } catch (error) {
     handleFirestoreError(error, OperationType.GET, path);
+    return null;
   }
 };
 
@@ -113,6 +114,7 @@ export const getHistory = async (userId: string): Promise<any[] | null> => {
     return null;
   } catch (error) {
     handleFirestoreError(error, OperationType.GET, path);
+    return null;
   }
 };
 
@@ -136,6 +138,7 @@ export const getJobApplications = async (userId: string): Promise<any[] | null> 
     return null;
   } catch (error) {
     handleFirestoreError(error, OperationType.GET, path);
+    return null;
   }
 };
 
@@ -159,5 +162,6 @@ export const getAiConfig = async (userId: string): Promise<any | null> => {
     return null;
   } catch (error) {
     handleFirestoreError(error, OperationType.GET, path);
+    return null;
   }
 };

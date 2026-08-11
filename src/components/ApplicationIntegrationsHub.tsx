@@ -330,7 +330,7 @@ export default function ApplicationIntegrationsHub({
   const [expandedNetworkIndex, setExpandedNetworkIndex] = useState<number | null>(null);
   
   // Tab control state
-  const [activeHubTab, setActiveHubTab] = useState<'email' | 'linkedin' | 'networking'>('email');
+  const [activeHubTab, setActiveHubTab] = useState<'email' | 'linkedin' | 'networking' | 'parser'>('email');
 
   // Load and sync job applications from tracker
   const { user: authUser } = useAuth();
@@ -2059,7 +2059,7 @@ export default function ApplicationIntegrationsHub({
                 </div>
 
                 <div className="space-y-3 max-h-[350px] overflow-y-auto pr-1">
-                  {networkingPlan.opportunities.map((opp, idx) => (
+                  {networkingPlan.opportunities.map((opp: any, idx: number) => (
                     <div 
                       key={idx}
                       className="bg-slate-50 dark:bg-slate-800/45 border border-slate-200 dark:border-slate-800 rounded-xl p-3 space-y-2.5"
@@ -2155,7 +2155,7 @@ export default function ApplicationIntegrationsHub({
                   .sort((a, b) => new Date(b.dateUpdated).getTime() - new Date(a.dateUpdated).getTime())
                   .slice(0, 5)
                   .map(app => {
-                    const latestLog = app.notes.split('\n').reverse().find(n => n.includes('[Outreach Log]')) || '';
+                    const latestLog = app.notes.split('\n').reverse().find((n: string) => n.includes('[Outreach Log]')) || '';
                     const platformMatch = latestLog.match(/via (Email|LinkedIn)/);
                     const platform = platformMatch ? platformMatch[1] : 'Unknown';
                     
