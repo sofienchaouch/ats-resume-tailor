@@ -5,6 +5,7 @@ import { getJobApplications, saveJobApplications, listResumeVersions } from '../
 import { localDb } from '../utils/localDb';
 import { useToast } from './Toast';
 import FunnelAnalytics from './FunnelAnalytics';
+import FollowUpReminders from './FollowUpReminders';
 import { 
   Briefcase, 
   Plus, 
@@ -362,6 +363,9 @@ export default function ApplicationTracker() {
           </div>
         </div>
       </div>
+
+      {/* Follow-up reminders for applications sitting stale */}
+      <FollowUpReminders applications={applications} />
 
       {/* 1b. FUNNEL ANALYTICS BY RESUME VERSION */}
       {user && <FunnelAnalytics applications={applications} versionNames={resumeVersionNames} />}
