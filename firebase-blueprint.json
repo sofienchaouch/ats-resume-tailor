@@ -1,0 +1,33 @@
+{
+  "entities": {
+    "User": {
+      "title": "User",
+      "description": "User profile containing master resume, history list, job applications, and AI settings",
+      "type": "object",
+      "properties": {
+        "masterResume": {
+          "type": "object",
+          "description": "Master resume data of the user"
+        },
+        "historyList": {
+          "type": "array",
+          "description": "List of tailored resume history objects"
+        },
+        "jobApplications": {
+          "type": "array",
+          "description": "List of tracked job applications"
+        },
+        "aiConfig": {
+          "type": "object",
+          "description": "Custom AI configuration and api keys"
+        }
+      }
+    }
+  },
+  "firestore": {
+    "/users/{userId}": {
+      "schema": "User",
+      "description": "User documents containing customized resume data and tracking details"
+    }
+  }
+}

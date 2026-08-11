@@ -1,0 +1,6 @@
+{
+  "name": "ATS Resume Tailor",
+  "description": "Adapt your master resume and generate tailored, ATS-optimized resumes in English and French for any job post.",
+  "requestFramePermissions": [],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}

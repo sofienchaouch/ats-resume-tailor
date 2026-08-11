@@ -1,0 +1,122 @@
+@import "tailwindcss";
+
+@theme {
+  --font-sans: "Inter", ui-sans-serif, system-ui, sans-serif;
+  --font-serif: "Playfair Display", ui-serif, Georgia, serif;
+  --font-mono: "JetBrains Mono", ui-monospace, SFMono-Regular, monospace;
+}
+
+@variant dark (&:where(.dark, .dark *));
+
+/* Dark Mode Resume Canvas Overrides */
+.dark #printable-resume-canvas {
+  background-color: #0f172a !important; /* bg-slate-900 */
+  color: #f1f5f9 !important;
+  border-color: #334155 !important;
+}
+
+/* Override hardcoded light text colors in dark mode inside the resume canvas */
+.dark #printable-resume-canvas .text-slate-950,
+.dark #printable-resume-canvas .text-slate-900,
+.dark #printable-resume-canvas .text-slate-850,
+.dark #printable-resume-canvas .text-slate-800,
+.dark #printable-resume-canvas .text-slate-700,
+.dark #printable-resume-canvas .text-slate-600,
+.dark #printable-resume-canvas .text-neutral-900,
+.dark #printable-resume-canvas .text-neutral-800,
+.dark #printable-resume-canvas .text-neutral-700,
+.dark #printable-resume-canvas .text-gray-900,
+.dark #printable-resume-canvas .text-gray-800,
+.dark #printable-resume-canvas .text-gray-700,
+.dark #printable-resume-canvas h1,
+.dark #printable-resume-canvas h2,
+.dark #printable-resume-canvas h3,
+.dark #printable-resume-canvas h4 {
+  color: #f8fafc !important; /* text-slate-50 */
+}
+
+.dark #printable-resume-canvas .text-slate-500,
+.dark #printable-resume-canvas .text-slate-400,
+.dark #printable-resume-canvas .text-neutral-500,
+.dark #printable-resume-canvas .text-gray-500,
+.dark #printable-resume-canvas span.text-slate-400,
+.dark #printable-resume-canvas span.text-slate-500 {
+  color: #94a3b8 !important; /* text-slate-400 */
+}
+
+/* Form controls inside resume canvas */
+#printable-resume-canvas input,
+#printable-resume-canvas textarea {
+  background-color: rgba(241, 245, 249, 0.5) !important; /* light grey in light mode */
+  color: #0f172a !important; /* dark slate text in light mode */
+  border: 1px solid #cbd5e1 !important;
+  border-radius: 0.375rem !important;
+  padding: 0.25rem 0.5rem !important;
+}
+
+#printable-resume-canvas input:focus,
+#printable-resume-canvas textarea:focus {
+  background-color: #ffffff !important;
+  outline: 2px solid #4f46e5 !important;
+  outline-offset: 1px !important;
+}
+
+.dark #printable-resume-canvas input,
+.dark #printable-resume-canvas textarea {
+  background-color: #1e293b !important; /* bg-slate-800 in dark mode */
+  color: #f8fafc !important; /* text-slate-50 */
+  border: 1px solid #475569 !important;
+  border-radius: 0.375rem !important;
+  padding: 0.25rem 0.5rem !important;
+}
+
+.dark #printable-resume-canvas input:focus,
+.dark #printable-resume-canvas textarea:focus {
+  background-color: #0f172a !important;
+  outline: 2px solid #6366f1 !important;
+  outline-offset: 1px !important;
+}
+
+/* Also ensure background spans or details inside modern column sidebar layout look perfect in dark mode */
+.dark #printable-resume-canvas .bg-slate-50,
+.dark #printable-resume-canvas .bg-slate-100 {
+  background-color: #1e293b !important;
+  color: #e2e8f0 !important;
+}
+
+.dark #printable-resume-canvas .border-slate-100,
+.dark #printable-resume-canvas .border-slate-200,
+.dark #printable-resume-canvas .border-slate-300 {
+  border-color: #334155 !important;
+}
+
+@media print {
+  /* Hide all elements on the page except the resume canvas */
+  body * {
+    visibility: hidden;
+  }
+  
+  #printable-resume-canvas, #printable-resume-canvas * {
+    visibility: visible;
+  }
+  
+  #printable-resume-canvas {
+    position: absolute;
+    left: 0;
+    top: 0;
+    width: 100% !important;
+    max-width: 100% !important;
+    border: none !important;
+    box-shadow: none !important;
+    padding: 0 !important;
+    margin: 0 !important;
+    background: white !important;
+    color: black !important;
+  }
+
+  /* Prevent browser-enforced headers/footers in some systems */
+  @page {
+    margin: 15mm 15mm 15mm 15mm;
+  }
+}
+
