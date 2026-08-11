@@ -36,7 +36,7 @@ import {
 import { sampleResumes } from './data/samples';
 import { ResumeData, TailorResponse, CoverLetterData, AiConfig } from './types';
 import { useAuth } from './AuthContext';
-import { getMasterResume, saveMasterResume, getHistory, saveHistory, getJobApplications, saveJobApplications, getAiConfig, saveAiConfig, migrateToSubcollections } from './db';
+import { getMasterResume, saveMasterResume, getHistory, saveHistory, getJobApplications, saveJobApplications, getAiConfig, saveAiConfig, migrateToSubcollections, listResumeVersions, saveResumeVersion, getResumeVersion, deleteResumeVersion, renameResumeVersion, PRIMARY_RESUME_ID, ResumeVersionMeta } from './db';
 import { localDb } from './utils/localDb';
 import { apiFetch } from './utils/apiClient';
 import { useToast } from './components/Toast';
@@ -44,6 +44,7 @@ import AtsDashboard from './components/AtsDashboard';
 import ResumePreview from './components/ResumePreview';
 import CoverLetterPreview from './components/CoverLetterPreview';
 import ResumeDiffView from './components/ResumeDiffView';
+import ResumeVersionSwitcher from './components/ResumeVersionSwitcher';
 import InterviewPrepCoach from './components/InterviewPrepCoach';
 import MasterResumeWizard from './components/MasterResumeWizard';
 import JobsDeepSearch from './components/JobsDeepSearch';
@@ -196,6 +197,12 @@ export default function App() {
 
   // Master Resume State
   const [masterResume, setMasterResume] = useState<ResumeData>(getInitialResume());
+  // Multi-version resumes: signed-in users can maintain several named
+  // resumes (e.g. "Backend", "Data") backed by users/{uid}/resumes/{id}.
+  // Guests stay single-resume (localDb has no concept of multiple versions).
+  const [resumeVersions, setResumeVersions] = useState<ResumeVersionMeta[]>([]);
+  const [activeResumeId, setActiveResumeId] = useState<string>(PRIMARY_RESUME_ID);
+  const [isSwitchingVersion, setIsSwitchingVersion] = useState(false);
   const [activeFormTab, setActiveFormTab] = useState<'contact' | 'summary' | 'experience' | 'skills' | 'education' | 'projects' | 'certifications' | 'languages'>('contact');
   const [importStatus, setImportStatus] = useState<{ type: 'success' | 'error'; message: string } | null>(null);
   const [isParsing, setIsParsing] = useState(false);
@@ -289,6 +296,7 @@ export default function App() {
     };
 
     if (user) {
+      setActiveResumeId(PRIMARY_RESUME_ID);
       // One-time, idempotent fan-out of the legacy single-document schema into
       // per-item subcollections (see src/db.ts). Fails open: if migration
       // itself errors, still proceed to load whatever already exists rather
@@ -297,6 +305,10 @@ export default function App() {
         getMasterResume(user.uid).then(savedMaster => {
           if (savedMaster) setMasterResume(savedMaster);
         }).catch(e => console.error('Failed to parse saved master resume', e));
+
+        listResumeVersions(user.uid).then(versions => {
+          setResumeVersions(versions);
+        }).catch(e => console.error('Failed to list resume versions', e));
 
         getHistory(user.uid).then(savedHistory => {
           if (savedHistory) setHistoryList(savedHistory);
@@ -314,18 +326,100 @@ export default function App() {
   // Save master resume on update. The Firestore write is debounced (~1.5s)
   // since this fires on every field edit and a full-document rewrite per
   // keystroke isn't necessary; local state and guest storage stay immediate.
+  // pendingSaveRef tracks which resumeId the pending debounced write targets,
+  // so switching versions mid-debounce can flush it immediately instead of
+  // losing the edit or writing it to the newly-active version by mistake.
   const saveMasterResumeTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const pendingSaveRef = useRef<{ resumeId: string; data: ResumeData } | null>(null);
+
+  const flushPendingResumeSave = () => {
+    if (saveMasterResumeTimer.current) {
+      clearTimeout(saveMasterResumeTimer.current);
+      saveMasterResumeTimer.current = null;
+    }
+    if (pendingSaveRef.current && user) {
+      const { resumeId, data } = pendingSaveRef.current;
+      pendingSaveRef.current = null;
+      saveResumeVersion(user.uid, resumeId, data);
+    }
+  };
+
   const handleUpdateMaster = (updated: ResumeData) => {
     setMasterResume(updated);
     if (user) {
+      pendingSaveRef.current = { resumeId: activeResumeId, data: updated };
       if (saveMasterResumeTimer.current) {
         clearTimeout(saveMasterResumeTimer.current);
       }
       saveMasterResumeTimer.current = setTimeout(() => {
-        saveMasterResume(user.uid, updated);
+        flushPendingResumeSave();
       }, 1500);
     } else {
       localDb.setItem('ats_master_resume', updated);
+    }
+  };
+
+  // Switches the active resume version: flushes any pending debounced save
+  // for the currently-active version first (so an in-flight edit isn't lost
+  // or misattributed to the newly-selected version), then loads the target.
+  const handleSwitchResumeVersion = async (resumeId: string) => {
+    if (!user || resumeId === activeResumeId) return;
+    flushPendingResumeSave();
+    setIsSwitchingVersion(true);
+    try {
+      const data = await getResumeVersion(user.uid, resumeId);
+      setMasterResume(data || getInitialResume());
+      setActiveResumeId(resumeId);
+    } catch (e) {
+      console.error('Failed to switch resume version', e);
+      showError('Could not load that resume version', e);
+    } finally {
+      setIsSwitchingVersion(false);
+    }
+  };
+
+  // Creates a new named version, seeded from the currently active resume's
+  // content (the common case: "make a Backend variant from what I have").
+  const handleCreateResumeVersion = async (name: string) => {
+    if (!user) return;
+    flushPendingResumeSave();
+    const newId = 'ver_' + Date.now().toString(36) + Math.random().toString(36).slice(2, 8);
+    const seedData = JSON.parse(JSON.stringify(masterResume)) as ResumeData;
+    try {
+      await saveResumeVersion(user.uid, newId, seedData, name);
+      setResumeVersions(prev => [...prev, { id: newId, name, updatedAt: Date.now() }]);
+      setActiveResumeId(newId);
+      setMasterResume(seedData);
+      showSuccess(`Created resume version "${name}".`);
+    } catch (e) {
+      console.error('Failed to create resume version', e);
+      showError('Could not create new resume version', e);
+    }
+  };
+
+  const handleRenameResumeVersion = async (resumeId: string, name: string) => {
+    if (!user || !name.trim()) return;
+    try {
+      await renameResumeVersion(user.uid, resumeId, name.trim());
+      setResumeVersions(prev => prev.map(v => (v.id === resumeId ? { ...v, name: name.trim() } : v)));
+    } catch (e) {
+      console.error('Failed to rename resume version', e);
+      showError('Could not rename resume version', e);
+    }
+  };
+
+  const handleDeleteResumeVersion = async (resumeId: string) => {
+    if (!user || resumeId === PRIMARY_RESUME_ID) return;
+    try {
+      await deleteResumeVersion(user.uid, resumeId);
+      setResumeVersions(prev => prev.filter(v => v.id !== resumeId));
+      if (activeResumeId === resumeId) {
+        await handleSwitchResumeVersion(PRIMARY_RESUME_ID);
+      }
+      showSuccess('Resume version deleted.');
+    } catch (e) {
+      console.error('Failed to delete resume version', e);
+      showError('Could not delete resume version', e);
     }
   };
 
@@ -1516,6 +1610,18 @@ export default function App() {
                       </button>
                     </div>
                   </div>
+
+                  {user && (
+                    <ResumeVersionSwitcher
+                      versions={resumeVersions}
+                      activeResumeId={activeResumeId}
+                      isSwitching={isSwitchingVersion}
+                      onSwitch={handleSwitchResumeVersion}
+                      onCreate={handleCreateResumeVersion}
+                      onRename={handleRenameResumeVersion}
+                      onDelete={handleDeleteResumeVersion}
+                    />
+                  )}
 
                   {resumeViewMode === 'split' ? (
                     <div className="grid grid-cols-1 lg:grid-cols-12 gap-6 animate-fade-in" id="split-workspace-grid">

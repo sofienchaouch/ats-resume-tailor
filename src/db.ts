@@ -1,5 +1,5 @@
 import { db, auth } from './firebase';
-import { doc, getDoc, setDoc, collection, getDocs, writeBatch } from 'firebase/firestore';
+import { doc, getDoc, setDoc, deleteDoc, collection, getDocs, writeBatch } from 'firebase/firestore';
 import { ResumeData, TailorResponse } from './types';
 
 export enum OperationType {
@@ -67,10 +67,16 @@ export function removeUndefined<T>(obj: T): T {
 // users/{uid} itself now holds only profile data (schemaVersion, aiConfig).
 export const SCHEMA_VERSION = 2;
 
-// A single "primary" resume today; users/{uid}/resumes/{resumeId} is a
-// subcollection so a future multi-version-resume feature can add more
-// documents here without another migration.
-const PRIMARY_RESUME_ID = 'primary';
+// The default resume every account starts with. users/{uid}/resumes/{resumeId}
+// is a subcollection, so additional named versions (e.g. "Backend", "Data")
+// live alongside it as their own documents.
+export const PRIMARY_RESUME_ID = 'primary';
+
+export interface ResumeVersionMeta {
+  id: string;
+  name: string;
+  updatedAt: number;
+}
 
 /**
  * Upserts `items` (each needs a stable `id`) into users/{userId}/{subcollection}
@@ -149,24 +155,29 @@ export const migrateToSubcollections = async (userId: string): Promise<void> => 
   }
 };
 
-export const saveMasterResume = async (userId: string, data: ResumeData) => {
-  const path = `users/${userId}/resumes/${PRIMARY_RESUME_ID}`;
+/**
+ * Saves resume data for a given version. `name` is only written when
+ * provided, so routine autosaves (which don't pass a name) never clobber a
+ * version the user has renamed.
+ */
+export const saveResumeVersion = async (userId: string, resumeId: string, data: ResumeData, name?: string) => {
+  const path = `users/${userId}/resumes/${resumeId}`;
   try {
     const sanitizedData = removeUndefined(data);
-    await setDoc(
-      doc(db, 'users', userId, 'resumes', PRIMARY_RESUME_ID),
-      { name: 'Master Resume', data: sanitizedData, updatedAt: Date.now() },
-      { merge: true }
-    );
+    const payload: any = { data: sanitizedData, updatedAt: Date.now() };
+    if (name !== undefined) {
+      payload.name = name;
+    }
+    await setDoc(doc(db, 'users', userId, 'resumes', resumeId), payload, { merge: true });
   } catch (error) {
     handleFirestoreError(error, OperationType.WRITE, path);
   }
 };
 
-export const getMasterResume = async (userId: string): Promise<ResumeData | null> => {
-  const path = `users/${userId}/resumes/${PRIMARY_RESUME_ID}`;
+export const getResumeVersion = async (userId: string, resumeId: string): Promise<ResumeData | null> => {
+  const path = `users/${userId}/resumes/${resumeId}`;
   try {
-    const docSnap = await getDoc(doc(db, 'users', userId, 'resumes', PRIMARY_RESUME_ID));
+    const docSnap = await getDoc(doc(db, 'users', userId, 'resumes', resumeId));
     if (docSnap.exists() && docSnap.data().data) {
       return docSnap.data().data as ResumeData;
     }
@@ -175,6 +186,51 @@ export const getMasterResume = async (userId: string): Promise<ResumeData | null
     handleFirestoreError(error, OperationType.GET, path);
     return null;
   }
+};
+
+export const listResumeVersions = async (userId: string): Promise<ResumeVersionMeta[]> => {
+  const path = `users/${userId}/resumes`;
+  try {
+    const snap = await getDocs(collection(db, 'users', userId, 'resumes'));
+    return snap.docs
+      .map((d) => ({
+        id: d.id,
+        name: (d.data().name as string) || 'Untitled Resume',
+        updatedAt: (d.data().updatedAt as number) || 0,
+      }))
+      .sort((a, b) => (a.id === PRIMARY_RESUME_ID ? -1 : b.id === PRIMARY_RESUME_ID ? 1 : b.updatedAt - a.updatedAt));
+  } catch (error) {
+    handleFirestoreError(error, OperationType.LIST, path);
+    return [];
+  }
+};
+
+export const renameResumeVersion = async (userId: string, resumeId: string, name: string) => {
+  const path = `users/${userId}/resumes/${resumeId}`;
+  try {
+    await setDoc(doc(db, 'users', userId, 'resumes', resumeId), { name, updatedAt: Date.now() }, { merge: true });
+  } catch (error) {
+    handleFirestoreError(error, OperationType.UPDATE, path);
+  }
+};
+
+export const deleteResumeVersion = async (userId: string, resumeId: string) => {
+  const path = `users/${userId}/resumes/${resumeId}`;
+  try {
+    await deleteDoc(doc(db, 'users', userId, 'resumes', resumeId));
+  } catch (error) {
+    handleFirestoreError(error, OperationType.DELETE, path);
+  }
+};
+
+// Legacy single-resume API, kept for the callers that only ever deal with
+// the default version. Thin wrappers over the version-aware functions above.
+export const saveMasterResume = async (userId: string, data: ResumeData) => {
+  await saveResumeVersion(userId, PRIMARY_RESUME_ID, data);
+};
+
+export const getMasterResume = async (userId: string): Promise<ResumeData | null> => {
+  return getResumeVersion(userId, PRIMARY_RESUME_ID);
 };
 
 export const saveHistory = async (userId: string, history: { id: string; timestamp: string; title: string; result: TailorResponse }[]) => {
