@@ -37,6 +37,11 @@ interface JobsDeepSearchProps {
   masterResume: ResumeData;
   searchQueryUsed: string;
   searchLocationUsed: string;
+  batchSelectedIndices?: Set<number>;
+  onToggleBatchSelect?: (idx: number) => void;
+  onRunBatchTailor?: () => void;
+  isBatchRunning?: boolean;
+  batchProgress?: { current: number; total: number } | null;
 }
 
 export default function JobsDeepSearch({
@@ -63,6 +68,11 @@ export default function JobsDeepSearch({
   onDeepSearchJobs,
   onImportJobDetails,
   masterResume,
+  batchSelectedIndices,
+  onToggleBatchSelect,
+  onRunBatchTailor,
+  isBatchRunning,
+  batchProgress,
   searchQueryUsed,
   searchLocationUsed
 }: JobsDeepSearchProps) {
@@ -278,9 +288,29 @@ export default function JobsDeepSearch({
               </div>
             </div>
 
+            {onRunBatchTailor && batchSelectedIndices && (
+              <div className="flex items-center justify-between gap-2 bg-indigo-50 dark:bg-indigo-950/30 border border-indigo-100 dark:border-indigo-900/50 rounded-xl px-3 py-2">
+                <span className="text-[11px] font-bold text-indigo-700 dark:text-indigo-400">
+                  {isBatchRunning && batchProgress
+                    ? `Tailoring ${batchProgress.current}/${batchProgress.total}...`
+                    : `${batchSelectedIndices.size} job${batchSelectedIndices.size !== 1 ? 's' : ''} selected for batch tailoring`}
+                </span>
+                <button
+                  onClick={onRunBatchTailor}
+                  disabled={batchSelectedIndices.size === 0 || isBatchRunning}
+                  className="bg-indigo-600 hover:bg-indigo-700 disabled:bg-slate-200 disabled:text-slate-400 text-white text-[11px] font-bold px-3 py-1.5 rounded-lg flex items-center gap-1 cursor-pointer"
+                  type="button"
+                >
+                  {isBatchRunning ? <Loader2 className="w-3 h-3 animate-spin" /> : <Sparkles className="w-3 h-3" />}
+                  Tailor Selected
+                </button>
+              </div>
+            )}
+
             <div className="space-y-2 max-h-[300px] overflow-y-auto pr-1" id="search-results-list">
               {searchResults.map((job, idx) => {
                 const isSelected = selectedSearchJobIndex === idx;
+                const isBatchSelected = batchSelectedIndices?.has(idx) || false;
                 return (
                   <motion.div
                     initial={{ opacity: 0, y: 15 }}
@@ -295,6 +325,19 @@ export default function JobsDeepSearch({
                     onClick={() => setSelectedSearchJobIndex(isSelected ? null : idx)}
                   >
                     <div className="flex justify-between items-start gap-1">
+                      {onToggleBatchSelect && (
+                        <input
+                          type="checkbox"
+                          checked={isBatchSelected}
+                          onChange={(e) => {
+                            e.stopPropagation();
+                            onToggleBatchSelect(idx);
+                          }}
+                          onClick={(e) => e.stopPropagation()}
+                          className="mt-1 mr-2 rounded border-slate-300 text-indigo-600 focus:ring-indigo-500 w-3.5 h-3.5 flex-none"
+                          title="Select for batch tailoring"
+                        />
+                      )}
                       <div>
                         <h4 className="text-xs font-bold text-slate-900 leading-tight">{job.title}</h4>
                         <p className="text-[11px] font-medium text-slate-600 mt-0.5">

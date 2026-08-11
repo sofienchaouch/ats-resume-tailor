@@ -806,6 +806,82 @@ export default function App() {
     }
   };
 
+  // Batch tailoring: process multiple search-result jobs sequentially against
+  // the same master resume. Sequential (not parallel) because /api/tailor is
+  // rate-limited server-side (expensiveAiLimiter) -- one at a time naturally
+  // respects that instead of firing a burst that mostly comes back 429.
+  const [batchSelectedIndices, setBatchSelectedIndices] = useState<Set<number>>(new Set());
+  const [isBatchRunning, setIsBatchRunning] = useState(false);
+  const [batchProgress, setBatchProgress] = useState<{ current: number; total: number } | null>(null);
+
+  const handleToggleBatchSelect = (idx: number) => {
+    setBatchSelectedIndices((prev) => {
+      const next = new Set(prev);
+      if (next.has(idx)) next.delete(idx); else next.add(idx);
+      return next;
+    });
+  };
+
+  const handleRunBatchTailor = async () => {
+    if (!searchResults || batchSelectedIndices.size === 0) return;
+    const jobs = Array.from(batchSelectedIndices).map((idx) => searchResults[idx]).filter(Boolean);
+    setIsBatchRunning(true);
+    setBatchProgress({ current: 0, total: jobs.length });
+
+    const newHistoryItems: { id: string; timestamp: string; title: string; targetCompany: string; targetTitle: string; result: TailorResponse }[] = [];
+    let successCount = 0;
+
+    for (let i = 0; i < jobs.length; i++) {
+      const job = jobs[i];
+      setBatchProgress({ current: i + 1, total: jobs.length });
+      try {
+        const data = await apiFetch<TailorResponse>(
+          '/api/tailor',
+          {
+            masterResume,
+            jobDescription: job.description || '',
+            jobUrl: job.url || '',
+            language: targetLanguage,
+            optimizeForRelocation,
+            model: selectedModel,
+            aiConfig,
+          },
+          { apiKey: aiConfig?.apiKey }
+        );
+        newHistoryItems.push({
+          id: Date.now().toString() + '_' + i,
+          timestamp: new Date().toLocaleString(),
+          title: `${job.title || data.tailoredResume.contact.title} at ${job.company || 'Target Job'}`,
+          targetCompany: job.company || '',
+          targetTitle: job.title || '',
+          result: data,
+        });
+        successCount++;
+      } catch (err) {
+        console.error(`Batch tailor failed for ${job.company || 'unknown job'}:`, err);
+      }
+    }
+
+    if (newHistoryItems.length > 0) {
+      const updatedHistory = [...newHistoryItems, ...historyList].slice(0, 10);
+      setHistoryList(updatedHistory);
+      if (user) {
+        saveHistory(user.uid, updatedHistory);
+      } else {
+        localDb.setItem('ats_tailored_history', updatedHistory);
+      }
+    }
+
+    setIsBatchRunning(false);
+    setBatchProgress(null);
+    setBatchSelectedIndices(new Set());
+    if (successCount > 0) {
+      showSuccess(`Batch complete: ${successCount}/${jobs.length} tailored successfully. Check History to review each.`);
+    } else {
+      showError('Batch tailoring failed for all selected jobs.', null);
+    }
+  };
+
   // Clear tailored result to go back
   const handleBackToInputs = () => {
     setTailorResult(null);
@@ -1711,6 +1787,11 @@ export default function App() {
                       masterResume={masterResume}
                       searchQueryUsed={searchQueryUsed}
                       searchLocationUsed={searchLocationUsed}
+                      batchSelectedIndices={batchSelectedIndices}
+                      onToggleBatchSelect={handleToggleBatchSelect}
+                      onRunBatchTailor={handleRunBatchTailor}
+                      isBatchRunning={isBatchRunning}
+                      batchProgress={batchProgress}
                     />
                   </div>
 
