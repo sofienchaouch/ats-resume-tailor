@@ -43,6 +43,7 @@ import { useToast } from './components/Toast';
 import AtsDashboard from './components/AtsDashboard';
 import ResumePreview from './components/ResumePreview';
 import CoverLetterPreview from './components/CoverLetterPreview';
+import ResumeDiffView from './components/ResumeDiffView';
 import InterviewPrepCoach from './components/InterviewPrepCoach';
 import MasterResumeWizard from './components/MasterResumeWizard';
 import JobsDeepSearch from './components/JobsDeepSearch';
@@ -214,7 +215,7 @@ export default function App() {
   const [error, setError] = useState<string | null>(null);
 
   // Result Tabs
-  const [activeResultTab, setActiveResultTab] = useState<'audit' | 'resume' | 'cover-letter'>('audit');
+  const [activeResultTab, setActiveResultTab] = useState<'audit' | 'resume' | 'diff' | 'cover-letter'>('audit');
 
   // Cover Letter States
   const [coverLetter, setCoverLetter] = useState<CoverLetterData | null>(null);
@@ -1691,6 +1692,22 @@ export default function App() {
                             Tailored Resume CV
                           </button>
                           <button
+                            onClick={() => setActiveResultTab('diff')}
+                            className={`text-xs font-bold px-3.5 py-1.5 rounded-lg transition-all cursor-pointer ${
+                              activeResultTab === 'diff'
+                                ? 'bg-white dark:bg-slate-900 text-indigo-700 dark:text-indigo-400 shadow-sm'
+                                : 'text-slate-600 dark:text-slate-400 hover:text-slate-950 dark:hover:text-white'
+                            }`}
+                            id="tab-diff-btn"
+                          >
+                            What Changed
+                            {tailorResult?.fabricationFlags && tailorResult.fabricationFlags.length > 0 && (
+                              <span className="ml-1.5 inline-flex items-center justify-center w-4 h-4 text-[10px] font-bold text-white bg-red-500 rounded-full">
+                                {tailorResult.fabricationFlags.length}
+                              </span>
+                            )}
+                          </button>
+                          <button
                             onClick={() => setActiveResultTab('cover-letter')}
                             className={`text-xs font-bold px-3.5 py-1.5 rounded-lg transition-all cursor-pointer ${
                               activeResultTab === 'cover-letter'
@@ -1760,6 +1777,14 @@ export default function App() {
                               onUpdate={(updated) => setTailorResult({ ...tailorResult, tailoredResume: updated })}
                               aiConfig={aiConfig}
                               selectedModel={selectedModel}
+                            />
+                          </div>
+                        ) : activeResultTab === 'diff' ? (
+                          <div className="bg-slate-50 dark:bg-slate-950/40 border border-slate-200 dark:border-slate-800 rounded-2xl p-5 print:hidden">
+                            <ResumeDiffView
+                              masterResume={masterResume}
+                              tailoredResume={tailorResult.tailoredResume}
+                              fabricationFlags={tailorResult.fabricationFlags}
                             />
                           </div>
                         ) : activeResultTab === 'cover-letter' ? (
