@@ -11,6 +11,8 @@ import os from "os";
 import { initializeApp, getApps } from "firebase-admin/app";
 import { getAuth, type DecodedIdToken } from "firebase-admin/auth";
 import { rateLimit, ipKeyGenerator } from "express-rate-limit";
+import type { ZodType } from "zod";
+import * as schemas from "./server/schemas";
 import firebaseAppletConfig from "./firebase-applet-config.json" with { type: "json" };
 
 dotenv.config();
@@ -120,6 +122,24 @@ const expensiveAiLimiter = rateLimit({
   skip: hasOwnApiKey,
   handler: rateLimitedJson,
 });
+
+// Validates req.body against a zod schema before the handler (and any
+// Gemini call) runs. On success, req.body is replaced with the parsed
+// value, so existing `const { x, y } = req.body` destructuring is unaffected.
+function validateBody(schema: ZodType) {
+  return (req: Request, res: Response, next: NextFunction) => {
+    const result = schema.safeParse(req.body);
+    if (!result.success) {
+      return res.status(400).json({
+        error: result.error.issues[0]?.message || "Invalid request body",
+        code: "VALIDATION_ERROR",
+        statusCode: 400,
+      });
+    }
+    req.body = result.data;
+    next();
+  };
+}
 
 // Lazy initialize Gemini client to prevent startup crash if key is missing
 let aiInstance: GoogleGenAI | null = null;
@@ -651,7 +671,7 @@ async function generateContentWithRetry(params: {
 }
 
 // REST API endpoint to analyze a job URL and extract missing skills
-app.post("/api/analyze-job-url", standardAiLimiter, requireServerKey, async (req, res) => {
+app.post("/api/analyze-job-url", standardAiLimiter, requireServerKey, validateBody(schemas.analyzeJobUrlSchema), async (req, res) => {
   try {
     const { jobUrl, masterResume, model, aiConfig } = req.body;
 
@@ -698,7 +718,7 @@ Output the result as a JSON object: { "missingSkills": string[] }
 });
 
 // REST API endpoint to score and analyze resume impact
-app.post("/api/score-resume", standardAiLimiter, requireServerKey, async (req, res) => {
+app.post("/api/score-resume", standardAiLimiter, requireServerKey, validateBody(schemas.scoreResumeSchema), async (req, res) => {
   try {
     const { masterResume, model, aiConfig } = req.body;
 
@@ -751,7 +771,7 @@ Output the result as a JSON object: { "score": number, "suggestions": string[] }
 });
 
 // REST API endpoint to translate master resume
-app.post("/api/translate-resume", standardAiLimiter, requireServerKey, async (req, res) => {
+app.post("/api/translate-resume", standardAiLimiter, requireServerKey, validateBody(schemas.translateResumeSchema), async (req, res) => {
   try {
     const { masterResume, targetLanguage, model, aiConfig } = req.body;
 
@@ -882,7 +902,7 @@ Output the fully translated JSON object.
 });
 
 // REST API endpoint to tailor the resume
-app.post("/api/tailor", expensiveAiLimiter, requireServerKey, async (req, res) => {
+app.post("/api/tailor", expensiveAiLimiter, requireServerKey, validateBody(schemas.tailorSchema), async (req, res) => {
   try {
     const { masterResume, jobDescription, jobUrl, language, optimizeForRelocation, model, aiConfig } = req.body;
     if (!jobDescription && !jobUrl) {
@@ -1132,7 +1152,7 @@ ${JSON.stringify(masterResume, null, 2)}
 });
 
 // REST API endpoint to generate a cover letter
-app.post("/api/cover-letter", standardAiLimiter, requireServerKey, async (req, res) => {
+app.post("/api/cover-letter", standardAiLimiter, requireServerKey, validateBody(schemas.coverLetterSchema), async (req, res) => {
   try {
     const { tailoredResume, jobDescription, language, model, aiConfig } = req.body;
 
@@ -1211,7 +1231,7 @@ ${JSON.stringify(tailoredResume, null, 2)}
 });
 
 // REST API endpoint to parse PDF or DOCX resume using Gemini
-app.post("/api/parse-resume", standardAiLimiter, requireServerKey, async (req, res) => {
+app.post("/api/parse-resume", standardAiLimiter, requireServerKey, validateBody(schemas.parseResumeSchema), async (req, res) => {
   try {
     const { base64Data, fileType, model, aiConfig } = req.body;
 
@@ -1371,7 +1391,7 @@ app.post("/api/parse-resume", standardAiLimiter, requireServerKey, async (req, r
 });
 
 // REST API endpoint to run a deep search for jobs using Gemini and Google Search Grounding
-app.post("/api/jobs-deep-search", expensiveAiLimiter, requireServerKey, async (req, res) => {
+app.post("/api/jobs-deep-search", expensiveAiLimiter, requireServerKey, validateBody(schemas.jobsDeepSearchSchema), async (req, res) => {
   try {
     const { query, location, masterResume, useResume, supportsRelocation, jobType, salaryExpectation, remoteStatus, model, aiConfig } = req.body;
 
@@ -1504,7 +1524,7 @@ Output your response as a JSON object matching: {"query": "string", "location": 
 });
 
 // REST API endpoint to improve an individual resume achievement bullet point using Gemini AI
-app.post("/api/improve-bullet", standardAiLimiter, requireServerKey, async (req, res) => {
+app.post("/api/improve-bullet", standardAiLimiter, requireServerKey, validateBody(schemas.improveBulletSchema), async (req, res) => {
   try {
     const { bulletText, jobDescription, model, aiConfig } = req.body;
 
@@ -1591,7 +1611,7 @@ function findLocalChromeOrEdgePath(): string | null {
 }
 
 // REST API endpoint to generate ATS-safe PDF
-app.post("/api/generate-pdf", expensiveAiLimiter, requireServerKey, async (req, res) => {
+app.post("/api/generate-pdf", expensiveAiLimiter, requireServerKey, validateBody(schemas.generatePdfSchema), async (req, res) => {
   try {
     const { htmlContent } = req.body;
     if (!htmlContent) {
@@ -1634,7 +1654,7 @@ app.post("/api/generate-pdf", expensiveAiLimiter, requireServerKey, async (req, 
 });
 
 // REST API endpoint to generate interview preparation questions & strategies using Gemini AI
-app.post("/api/interview-prep", standardAiLimiter, requireServerKey, async (req, res) => {
+app.post("/api/interview-prep", standardAiLimiter, requireServerKey, validateBody(schemas.interviewPrepSchema), async (req, res) => {
   try {
     const { resumeData, jobDescription, model, aiConfig } = req.body;
 
@@ -1710,7 +1730,7 @@ Provide your output in a structured JSON matching the specified responseSchema. 
 });
 
 // REST API endpoint to analyze draft mock interview answers and provide score and constructive feedback
-app.post("/api/interview-feedback", standardAiLimiter, requireServerKey, async (req, res) => {
+app.post("/api/interview-feedback", standardAiLimiter, requireServerKey, validateBody(schemas.interviewFeedbackSchema), async (req, res) => {
   try {
     const { question, userAnswer, jobDescription, model, aiConfig } = req.body;
 
@@ -1774,7 +1794,7 @@ Provide your feedback in structured JSON matching the specified responseSchema:
 });
 
 // REST API endpoint to suggest networking opportunities adapted for the role and CV
-app.post("/api/networking-suggestions", standardAiLimiter, requireServerKey, async (req, res) => {
+app.post("/api/networking-suggestions", standardAiLimiter, requireServerKey, validateBody(schemas.networkingSuggestionsSchema), async (req, res) => {
   try {
     const { tailoredResume, jobDescription, model, aiConfig } = req.body;
     if (!tailoredResume) {
@@ -1848,7 +1868,7 @@ Generate valid JSON adhering strictly to the response schema.`;
 });
 
 // REST API endpoint to parse email messages to find interview invitations
-app.post("/api/parse-email-interview", standardAiLimiter, requireServerKey, async (req, res) => {
+app.post("/api/parse-email-interview", standardAiLimiter, requireServerKey, validateBody(schemas.parseEmailInterviewSchema), async (req, res) => {
   try {
     const { emailSnippet, emailBody, model, aiConfig } = req.body;
     if (!emailBody && !emailSnippet) {
