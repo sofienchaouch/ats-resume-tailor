@@ -38,6 +38,7 @@ import { ResumeData, TailorResponse, CoverLetterData, AiConfig } from './types';
 import { useAuth } from './AuthContext';
 import { getMasterResume, saveMasterResume, getHistory, saveHistory, getJobApplications, saveJobApplications, getAiConfig, saveAiConfig } from './db';
 import { localDb } from './utils/localDb';
+import { apiFetch } from './utils/apiClient';
 import { useToast } from './components/Toast';
 import AtsDashboard from './components/AtsDashboard';
 import ResumePreview from './components/ResumePreview';
@@ -403,21 +404,11 @@ export default function App() {
 
         const base64Data = result.split(',')[1];
 
-        const response = await fetch('/api/parse-resume', {
-          method: 'POST',
-          headers: {
-            'Content-Type': 'application/json',
-            ...(aiConfig?.apiKey ? { 'x-gemini-key': aiConfig.apiKey } : {}),
-          },
-          body: JSON.stringify({ base64Data, fileType, model: selectedModel, aiConfig }),
-        });
-
-        if (!response.ok) {
-          const errData = await response.json();
-          throw new Error(errData.error || 'Server parsing failed');
-        }
-
-        const parsedResume = await response.json();
+        const parsedResume = await apiFetch(
+          '/api/parse-resume',
+          { base64Data, fileType, model: selectedModel, aiConfig },
+          { apiKey: aiConfig?.apiKey }
+        );
         const cleanedData = validateAndCleanResumeData(parsedResume);
 
         // Update the master state and localStorage
@@ -505,21 +496,11 @@ export default function App() {
 
           const base64Data = result.split(',')[1];
 
-          const response = await fetch('/api/parse-resume', {
-            method: 'POST',
-            headers: {
-              'Content-Type': 'application/json',
-              ...(aiConfig?.apiKey ? { 'x-gemini-key': aiConfig.apiKey } : {}),
-            },
-            body: JSON.stringify({ base64Data, fileType, model: selectedModel, aiConfig }),
-          });
-
-          if (!response.ok) {
-            const errData = await response.json();
-            throw new Error(errData.error || 'Server parsing failed');
-          }
-
-          const parsedResume = await response.json();
+          const parsedResume = await apiFetch(
+            '/api/parse-resume',
+            { base64Data, fileType, model: selectedModel, aiConfig },
+            { apiKey: aiConfig?.apiKey }
+          );
           const cleanedData = validateAndCleanResumeData(parsedResume);
 
           handleUpdateMaster(cleanedData);
@@ -615,13 +596,9 @@ export default function App() {
     setSearchLocationUsed('');
 
     try {
-      const response = await fetch('/api/jobs-deep-search', {
-        method: 'POST',
-        headers: {
-          'Content-Type': 'application/json',
-          ...(aiConfig?.apiKey ? { 'x-gemini-key': aiConfig.apiKey } : {}),
-        },
-        body: JSON.stringify({
+      const data = await apiFetch(
+        '/api/jobs-deep-search',
+        {
           query: searchQuery,
           location: searchLocation,
           masterResume: searchBasedOnResume ? masterResume : undefined,
@@ -632,15 +609,9 @@ export default function App() {
           remoteStatus,
           model: selectedModel,
           aiConfig,
-        }),
-      });
-
-      if (!response.ok) {
-        const errData = await response.json();
-        throw new Error(errData.error || 'Failed to search jobs');
-      }
-
-      const data = await response.json();
+        },
+        { apiKey: aiConfig?.apiKey }
+      );
       setSearchResults(data.jobs || []);
       if (data.autoQuery) {
         setSearchQueryUsed(data.autoQuery);
@@ -682,13 +653,9 @@ export default function App() {
     setTailorResult(null);
 
     try {
-      const response = await fetch('/api/tailor', {
-        method: 'POST',
-        headers: {
-          'Content-Type': 'application/json',
-          ...(aiConfig?.apiKey ? { 'x-gemini-key': aiConfig.apiKey } : {}),
-        },
-        body: JSON.stringify({
+      const data = await apiFetch<TailorResponse>(
+        '/api/tailor',
+        {
           masterResume,
           jobDescription,
           jobUrl,
@@ -696,15 +663,9 @@ export default function App() {
           optimizeForRelocation,
           model: selectedModel,
           aiConfig,
-        }),
-      });
-
-      if (!response.ok) {
-        const errData = await response.json().catch(() => ({}));
-        throw new Error(errData.error || `Server returned error status ${response.status}`);
-      }
-
-      const data: TailorResponse = await response.json();
+        },
+        { apiKey: aiConfig?.apiKey }
+      );
       setTailorResult(data);
       setActiveResultTab('audit');
       setCurrentView('ats');
@@ -748,27 +709,17 @@ export default function App() {
     setGeneratingCoverLetter(true);
     setCoverLetterError(null);
     try {
-      const response = await fetch('/api/cover-letter', {
-        method: 'POST',
-        headers: {
-          'Content-Type': 'application/json',
-          ...(aiConfig?.apiKey ? { 'x-gemini-key': aiConfig.apiKey } : {}),
-        },
-        body: JSON.stringify({
+      const data = await apiFetch<CoverLetterData>(
+        '/api/cover-letter',
+        {
           tailoredResume: tailorResult.tailoredResume,
           jobDescription: jobDescription || tailorResult.optimizationSummary,
           language: targetLanguage,
           model: selectedModel,
           aiConfig,
-        }),
-      });
-
-      if (!response.ok) {
-        const errData = await response.json().catch(() => ({}));
-        throw new Error(errData.error || `Server returned error status ${response.status}`);
-      }
-
-      const data: CoverLetterData = await response.json();
+        },
+        { apiKey: aiConfig?.apiKey }
+      );
       setCoverLetter(data);
     } catch (err: any) {
       console.error(err);

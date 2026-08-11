@@ -25,6 +25,7 @@ import {
 } from 'lucide-react';
 import { ResumeData } from '../types';
 import { useToast } from './Toast';
+import { apiFetch } from '../utils/apiClient';
 
 interface InterviewQuestion {
   question: string;
@@ -173,20 +174,11 @@ export default function InterviewPrepCoach({
     setUserAnswer('');
     try {
       const savedModel = localStorage.getItem('ats_selected_model') || 'gemini-3.5-flash';
-      const response = await fetch('/api/interview-prep', {
-        method: 'POST',
-        headers: { 
-          'Content-Type': 'application/json',
-          ...(aiConfig?.apiKey ? { 'x-gemini-key': aiConfig.apiKey } : {}),
-        },
-        body: JSON.stringify({ resumeData, jobDescription, model: savedModel, aiConfig }),
-      });
-
-      if (!response.ok) {
-        throw new Error(`Server returned error status ${response.status}`);
-      }
-
-      const data = await response.json();
+      const data = await apiFetch(
+        '/api/interview-prep',
+        { resumeData, jobDescription, model: savedModel, aiConfig },
+        { apiKey: aiConfig?.apiKey }
+      );
       if (data.questions && data.questions.length > 0) {
         setQuestions(data.questions);
         setActiveIdx(0);
@@ -216,26 +208,17 @@ export default function InterviewPrepCoach({
 
     try {
       const savedModel = localStorage.getItem('ats_selected_model') || 'gemini-3.5-flash';
-      const response = await fetch('/api/interview-feedback', {
-        method: 'POST',
-        headers: { 
-          'Content-Type': 'application/json',
-          ...(aiConfig?.apiKey ? { 'x-gemini-key': aiConfig.apiKey } : {}),
-        },
-        body: JSON.stringify({
+      const feedbackData = await apiFetch<AnswerFeedback>(
+        '/api/interview-feedback',
+        {
           question: questions[activeIdx].question,
           userAnswer: userAnswer,
           jobDescription: jobDescription,
           model: savedModel,
           aiConfig
-        }),
-      });
-
-      if (!response.ok) {
-        throw new Error(`Server returned error status ${response.status}`);
-      }
-
-      const feedbackData: AnswerFeedback = await response.json();
+        },
+        { apiKey: aiConfig?.apiKey }
+      );
       setFeedback(feedbackData);
     } catch (err: any) {
       console.error(err);

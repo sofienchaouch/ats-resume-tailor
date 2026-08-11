@@ -23,6 +23,7 @@ import { Document, Packer, Paragraph, TextRun, AlignmentType } from 'docx';
 import { jsPDF } from 'jspdf';
 import html2canvas from 'html2canvas';
 import { useToast } from './Toast';
+import { apiFetchBlob } from '../utils/apiClient';
 
 function InlineTextarea({
   value,
@@ -505,18 +506,7 @@ export default function CoverLetterPreview({
       const savedConfig = localStorage.getItem('ats_ai_config');
       const apiKey = savedConfig ? JSON.parse(savedConfig)?.apiKey : '';
 
-      const response = await fetch('/api/generate-pdf', {
-        method: 'POST',
-        headers: { 
-          'Content-Type': 'application/json',
-          ...(apiKey ? { 'x-gemini-key': apiKey } : {}),
-        },
-        body: JSON.stringify({ htmlContent })
-      });
-
-      if (!response.ok) throw new Error('Failed to generate PDF on server');
-
-      const blob = await response.blob();
+      const blob = await apiFetchBlob('/api/generate-pdf', { htmlContent }, { apiKey });
       const url = URL.createObjectURL(blob);
       const a = document.createElement('a');
       a.href = url;

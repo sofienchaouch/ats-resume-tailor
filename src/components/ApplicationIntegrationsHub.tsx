@@ -30,6 +30,7 @@ import { ResumeData, CoverLetterData } from '../types';
 import { useAuth } from '../AuthContext';
 import { useToast } from './Toast';
 import { getJobApplications, saveJobApplications } from '../db';
+import { apiFetch } from '../utils/apiClient';
 
 interface ApplicationIntegrationsHubProps {
   tailoredResume: ResumeData;
@@ -273,21 +274,11 @@ export default function ApplicationIntegrationsHub({
       const apiKey = localAiConfig?.apiKey || '';
       const savedModel = localStorage.getItem('ats_selected_model') || 'gemini-3.5-flash';
 
-      const response = await fetch('/api/analyze-job-url', {
-        method: 'POST',
-        headers: { 
-          'Content-Type': 'application/json',
-          ...(apiKey ? { 'x-gemini-key': apiKey } : {}),
-        },
-        body: JSON.stringify({
-          jobUrl: jobUrlInput,
-          masterResume: tailoredResume,
-          model: savedModel,
-          aiConfig: localAiConfig
-        })
-      });
-      if (!response.ok) throw new Error('Failed to analyze job URL');
-      const data = await response.json();
+      const data = await apiFetch(
+        '/api/analyze-job-url',
+        { jobUrl: jobUrlInput, masterResume: tailoredResume, model: savedModel, aiConfig: localAiConfig },
+        { apiKey }
+      );
       setMissingSkills(data.missingSkills || []);
     } catch (err: any) {
       console.error(err);
@@ -459,23 +450,11 @@ export default function ApplicationIntegrationsHub({
       const savedConfig = localStorage.getItem('ats_ai_config');
       const apiKey = savedConfig ? JSON.parse(savedConfig)?.apiKey : '';
 
-      const response = await fetch('/api/parse-email-interview', {
-        method: 'POST',
-        headers: {
-          'Content-Type': 'application/json',
-          ...(apiKey ? { 'x-gemini-key': apiKey } : {}),
-        },
-        body: JSON.stringify({
-          emailSnippet: email.snippet,
-          emailBody: email.body
-        })
-      });
-
-      if (!response.ok) {
-        throw new Error('AI analysis failed.');
-      }
-
-      const parsed = await response.json();
+      const parsed = await apiFetch(
+        '/api/parse-email-interview',
+        { emailSnippet: email.snippet, emailBody: email.body },
+        { apiKey }
+      );
       setParsedInterview(parsed);
       
       // Seed form values
@@ -601,23 +580,11 @@ export default function ApplicationIntegrationsHub({
       const savedConfig = localStorage.getItem('ats_ai_config');
       const apiKey = savedConfig ? JSON.parse(savedConfig)?.apiKey : '';
 
-      const response = await fetch('/api/networking-suggestions', {
-        method: 'POST',
-        headers: {
-          'Content-Type': 'application/json',
-          ...(apiKey ? { 'x-gemini-key': apiKey } : {}),
-        },
-        body: JSON.stringify({
-          tailoredResume,
-          jobDescription: coverLetter?.subject || ''
-        })
-      });
-
-      if (!response.ok) {
-        throw new Error('Failed to generate networking opportunities.');
-      }
-
-      const data = await response.json();
+      const data = await apiFetch(
+        '/api/networking-suggestions',
+        { tailoredResume, jobDescription: coverLetter?.subject || '' },
+        { apiKey }
+      );
       setNetworkingPlan(data);
     } catch (err: any) {
       console.error(err);
@@ -842,11 +809,7 @@ export default function ApplicationIntegrationsHub({
         params.append('client_secret', customLinkedinClientSecret.trim());
       }
 
-      const response = await fetch(`/api/auth/linkedin/url?${params.toString()}`);
-      if (!response.ok) {
-        throw new Error('Failed to retrieve authentication url');
-      }
-      const { url } = await response.json();
+      const { url } = await apiFetch<{ url: string }>(`/api/auth/linkedin/url?${params.toString()}`);
       
       const authWindow = window.open(
         url,

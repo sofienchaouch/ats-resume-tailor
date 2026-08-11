@@ -21,6 +21,7 @@ import {
 } from 'lucide-react';
 import { ResumeData, AiConfig } from '../types';
 import { useToast } from './Toast';
+import { apiFetch } from '../utils/apiClient';
 
 interface ResumeVersion {
   id: string;
@@ -172,20 +173,11 @@ export default function MasterResumeWizard({
     setIsScoring(true);
     setResumeSuggestions([]);
     try {
-      const response = await fetch('/api/score-resume', {
-        method: 'POST',
-        headers: { 
-          'Content-Type': 'application/json',
-          ...(aiConfig?.apiKey ? { 'x-gemini-key': aiConfig.apiKey } : {}),
-        },
-        body: JSON.stringify({
-          masterResume,
-          model: selectedModel,
-          aiConfig
-        })
-      });
-      if (!response.ok) throw new Error('Failed to score resume');
-      const data = await response.json();
+      const data = await apiFetch(
+        '/api/score-resume',
+        { masterResume, model: selectedModel, aiConfig },
+        { apiKey: aiConfig?.apiKey }
+      );
       setResumeScore(data.score);
       setResumeSuggestions(data.suggestions);
     } catch (err: any) {
@@ -215,21 +207,11 @@ export default function MasterResumeWizard({
     setIsTranslating(true);
     setTranslatingLang(targetLanguage);
     try {
-      const response = await fetch('/api/translate-resume', {
-        method: 'POST',
-        headers: { 
-          'Content-Type': 'application/json',
-          ...(aiConfig?.apiKey ? { 'x-gemini-key': aiConfig.apiKey } : {}),
-        },
-        body: JSON.stringify({
-          masterResume,
-          targetLanguage,
-          model: selectedModel,
-          aiConfig
-        })
-      });
-      if (!response.ok) throw new Error('Failed to translate resume');
-      const data = await response.json();
+      const data = await apiFetch(
+        '/api/translate-resume',
+        { masterResume, targetLanguage, model: selectedModel, aiConfig },
+        { apiKey: aiConfig?.apiKey }
+      );
       onUpdateMaster(data.translatedResume);
       setVersionAlert({
         type: 'success',
@@ -433,24 +415,11 @@ export default function MasterResumeWizard({
       const apiKey = aiConfig?.apiKey || localAiConfig?.apiKey || '';
       const finalModel = selectedModel || localStorage.getItem('ats_selected_model') || 'gemini-3.5-flash';
 
-      const response = await fetch('/api/improve-bullet', {
-        method: 'POST',
-        headers: { 
-          'Content-Type': 'application/json',
-          ...(apiKey ? { 'x-gemini-key': apiKey } : {}),
-        },
-        body: JSON.stringify({ 
-          bulletText: text,
-          model: finalModel,
-          aiConfig: aiConfig || localAiConfig
-        }),
-      });
-
-      if (!response.ok) {
-        throw new Error(`Server returned error code: ${response.status}`);
-      }
-
-      const data = await response.json();
+      const data = await apiFetch(
+        '/api/improve-bullet',
+        { bulletText: text, model: finalModel, aiConfig: aiConfig || localAiConfig },
+        { apiKey }
+      );
       if (data.suggestions && data.suggestions.length > 0) {
         setBulletSuggestions(data.suggestions);
       } else {

@@ -6,6 +6,7 @@ import { jsPDF } from 'jspdf';
 import html2canvas from 'html2canvas';
 import SpellcheckField from './SpellcheckField';
 import { useToast } from './Toast';
+import { apiFetch, apiFetchBlob } from '../utils/apiClient';
 
 interface ResumePreviewProps {
   resumeData: ResumeData;
@@ -63,21 +64,11 @@ export default function ResumePreview({
       const apiKey = aiConfig?.apiKey || localAiConfig?.apiKey || '';
       const model = selectedModel || localStorage.getItem('ats_selected_model') || 'gemini-3.5-flash';
 
-      const response = await fetch('/api/translate-resume', {
-        method: 'POST',
-        headers: { 
-          'Content-Type': 'application/json',
-          ...(apiKey ? { 'x-gemini-key': apiKey } : {}),
-        },
-        body: JSON.stringify({
-          masterResume: resumeData,
-          targetLanguage,
-          model,
-          aiConfig: aiConfig || localAiConfig
-        })
-      });
-      if (!response.ok) throw new Error('Failed to translate resume');
-      const data = await response.json();
+      const data = await apiFetch(
+        '/api/translate-resume',
+        { masterResume: resumeData, targetLanguage, model, aiConfig: aiConfig || localAiConfig },
+        { apiKey }
+      );
       onUpdate(data.translatedResume);
       setTranslationToast({
         type: 'success',
@@ -292,16 +283,11 @@ export default function ResumePreview({
       const savedConfig = localStorage.getItem('ats_ai_config');
       const apiKey = savedConfig ? JSON.parse(savedConfig)?.apiKey : '';
       const savedModel = localStorage.getItem('ats_selected_model') || 'gemini-3.5-flash';
-      const response = await fetch('/api/improve-bullet', {
-        method: 'POST',
-        headers: {
-          'Content-Type': 'application/json',
-          ...(apiKey ? { 'x-gemini-key': apiKey } : {}),
-        },
-        body: JSON.stringify({ bulletText: originalText, model: savedModel }),
-      });
-      if (!response.ok) throw new Error('Failed to improve bullet point.');
-      const data = await response.json();
+      const data = await apiFetch(
+        '/api/improve-bullet',
+        { bulletText: originalText, model: savedModel },
+        { apiKey }
+      );
       setBulletSuggestions(data.suggestions || []);
     } catch (err) {
       console.error(err);
@@ -1082,18 +1068,7 @@ export default function ResumePreview({
       const savedConfig = localStorage.getItem('ats_ai_config');
       const apiKey = savedConfig ? JSON.parse(savedConfig)?.apiKey : '';
 
-      const response = await fetch('/api/generate-pdf', {
-        method: 'POST',
-        headers: { 
-          'Content-Type': 'application/json',
-          ...(apiKey ? { 'x-gemini-key': apiKey } : {}),
-        },
-        body: JSON.stringify({ htmlContent })
-      });
-
-      if (!response.ok) throw new Error('Failed to generate PDF on server');
-
-      const blob = await response.blob();
+      const blob = await apiFetchBlob('/api/generate-pdf', { htmlContent }, { apiKey });
       const url = URL.createObjectURL(blob);
       const a = document.createElement('a');
       a.href = url;
