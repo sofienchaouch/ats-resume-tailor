@@ -1,10 +1,12 @@
-import { initializeApp, getApp, getApps } from 'firebase/app';
-import { getAuth, signInWithPopup, GoogleAuthProvider, onAuthStateChanged, User } from 'firebase/auth';
-import firebaseConfig from '../../firebase-applet-config.json';
+import { signInWithPopup, GoogleAuthProvider, onAuthStateChanged, User } from 'firebase/auth';
+// Reuses the single canonical Firebase app instance from src/firebase.ts
+// instead of calling initializeApp a second time — the two files' configs
+// were verified identical, so this was never a live bug, but a second
+// initializeApp call site is still a footgun for the next person who edits
+// one and not the other.
+import { auth } from '../firebase';
 
-// Initialize Firebase App
-const app = !getApps().length ? initializeApp(firebaseConfig) : getApp();
-export const auth = getAuth(app);
+export { auth };
 
 // Configure Google Auth Provider with Gmail Compose scope
 export const provider = new GoogleAuthProvider();
