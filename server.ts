@@ -13,6 +13,8 @@ import { getAuth, type DecodedIdToken } from "firebase-admin/auth";
 import { rateLimit, ipKeyGenerator } from "express-rate-limit";
 import type { ZodType } from "zod";
 import * as schemas from "./server/schemas";
+import { computeTailorScoring } from "./server/scoring";
+import { detectFabrications } from "./server/fabricationGuard";
 import firebaseAppletConfig from "./firebase-applet-config.json" with { type: "json" };
 
 dotenv.config();
@@ -952,12 +954,7 @@ Strict Rules of Engagement:
 3. ALIGN keywords: Identify key technical/hard skills, soft skills, and industry terminology mentioned in the job post. Seamlessly integrate these keywords into the "Summary", "Experience" bullet points, and "Skills" list of the tailored resume.
 4. ATS COMPLIANCY: Ensure headings are standard, clean, and easily parsed. The layout must be strictly single-column. Avoid non-standard fonts, text boxes, or columns.
 5. TRANSLATION: If the Master Resume is in one language and the target is different, translate the content professionally. The output tailored resume must be written entirely in ${targetLang}.
-6. EVALUATION:
-   - Compute a realistic ATS score before optimization (from 20 to 65 depending on keyword matches and layout issues).
-   - Compute a realistic ATS score after optimization (from 95 to 100).
-   - Generate a list of critical keywords with their occurrence counts and importance.
-   - Run standard formatting compliance checks.
-7. READABILITY, STYLE & CLARITY ANALYSIS:
+6. READABILITY, STYLE & CLARITY ANALYSIS:
    - Perform a thorough style, clarity, vocabulary strength, active vs. passive voice, and readability analysis specifically on the provided "Master Resume".
    - styleClarityScore: Calculate a realistic readability and clarity score from 0 to 100 based on standard professional writing principles (word complexity, active verbs, sentence length, lack of cliché buzzwords).
    - readabilityLevel: Formulate a user-friendly description of the readability level (e.g., "Grade 10 - Standard Professional" or "Grade 15 - Slightly Wordy/Complex").
@@ -968,7 +965,7 @@ Strict Rules of Engagement:
    - clicheCount: Identify the count of generic buzzwords or clichés (e.g. "synergy", "team-player", "results-oriented", "go-getter") found in the master resume.
    - passiveVoiceInstances: List up to 3 exact phrases from the master resume where passive voice was used instead of active action verbs.
 ${optimizeForRelocation ? `
-8. RELOCATION & SPONSORSHIP ENHANCEMENT (CRITICAL):
+7. RELOCATION & SPONSORSHIP ENHANCEMENT (CRITICAL):
    - Redraft the resume summary / professional statement to highlight the candidate's active flexibility for international relocation, high readiness for global mobility, adaptability to multicultural global teams, and eligibility or preparedness for international visa sponsorship.
    - Position them as a highly mobile talent asset ready to relocate immediately, without fabricating any credentials.
 ` : ""}
@@ -1084,35 +1081,6 @@ ${JSON.stringify(masterResume, null, 2)}
           },
           required: ["contact", "summary", "experience", "skills", "education"]
         },
-        atsScoreBefore: { type: Type.INTEGER, description: "ATS score of the master resume (0-100)" },
-        atsScoreAfter: { type: Type.INTEGER, description: "ATS score of the tailored resume (95-100)" },
-        keywords: {
-          type: Type.ARRAY,
-          items: {
-            type: Type.OBJECT,
-            properties: {
-              term: { type: Type.STRING, description: "The important keyword or skill" },
-              category: { type: Type.STRING, description: "technical, soft, domain, or industry" },
-              frequencyInJob: { type: Type.INTEGER },
-              matchesInMaster: { type: Type.INTEGER },
-              matchesInTailored: { type: Type.INTEGER },
-              importance: { type: Type.STRING, description: "high, medium, or low" }
-            },
-            required: ["term", "category", "frequencyInJob", "matchesInMaster", "matchesInTailored", "importance"]
-          }
-        },
-        formattingChecks: {
-          type: Type.ARRAY,
-          items: {
-            type: Type.OBJECT,
-            properties: {
-              checkName: { type: Type.STRING },
-              status: { type: Type.STRING, description: "pass, warning, or fail" },
-              description: { type: Type.STRING }
-            },
-            required: ["checkName", "status", "description"]
-          }
-        },
         optimizationSummary: { type: Type.STRING, description: "A detailed summary of how the resume was tailored, what keywords were mapped, and structural fixes applied." },
         readabilityAnalysis: {
           type: Type.OBJECT,
@@ -1130,7 +1098,7 @@ ${JSON.stringify(masterResume, null, 2)}
           required: ["styleClarityScore", "readabilityLevel", "wordCount", "sentenceComplexity", "improvements", "strongPoints", "clicheCount", "passiveVoiceInstances"]
         }
       },
-      required: ["tailoredResume", "atsScoreBefore", "atsScoreAfter", "keywords", "formattingChecks", "optimizationSummary", "readabilityAnalysis"]
+      required: ["tailoredResume", "optimizationSummary", "readabilityAnalysis"]
     };
 
     const response = await generateContentWithRetry({
@@ -1151,6 +1119,24 @@ ${JSON.stringify(masterResume, null, 2)}
 
     // Parse safety check
     const data = safeJsonParse(textOutput);
+
+    // ATS score, keyword coverage, and formatting checks are computed
+    // deterministically from the actual resume/job text (server/scoring.ts)
+    // rather than asked of the model, so the reported "before -> after"
+    // delta is real instead of a prompt instruction to always improve.
+    const scoring = computeTailorScoring(
+      masterResume,
+      data.tailoredResume,
+      `${jobDescription || ""} ${fetchedJobDetails || ""}`.trim()
+    );
+    data.atsScoreBefore = scoring.atsScoreBefore;
+    data.atsScoreAfter = scoring.atsScoreAfter;
+    data.keywords = scoring.keywords;
+    data.formattingChecks = scoring.formattingChecks;
+
+    // The prompt asks the model not to invent credentials; this verifies it.
+    data.fabricationFlags = detectFabrications(masterResume, data.tailoredResume);
+
     res.json(data);
 
   } catch (error: any) {

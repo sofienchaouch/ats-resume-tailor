@@ -80,6 +80,12 @@ export interface ReadabilityAnalysis {
   passiveVoiceInstances: string[];
 }
 
+export interface FabricationFlag {
+  category: 'company' | 'dates' | 'education' | 'certification' | 'project';
+  value: string;
+  detail: string;
+}
+
 export interface TailorResponse {
   tailoredResume: ResumeData;
   atsScoreBefore: number;
@@ -88,6 +94,7 @@ export interface TailorResponse {
   formattingChecks: FormattingCheck[];
   optimizationSummary: string;
   readabilityAnalysis?: ReadabilityAnalysis;
+  fabricationFlags?: FabricationFlag[];
 }
 
 export interface CoverLetterData {
