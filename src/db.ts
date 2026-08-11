@@ -293,6 +293,26 @@ export const getAnswerBank = async (userId: string): Promise<any[] | null> => {
   }
 };
 
+export const saveAchievementBank = async (userId: string, entries: any[]) => {
+  const path = `users/${userId}/achievementBank`;
+  try {
+    await syncSubcollection(userId, 'achievementBank', entries);
+  } catch (error) {
+    handleFirestoreError(error, OperationType.WRITE, path);
+  }
+};
+
+export const getAchievementBank = async (userId: string): Promise<any[] | null> => {
+  const path = `users/${userId}/achievementBank`;
+  try {
+    const snap = await getDocs(collection(db, 'users', userId, 'achievementBank'));
+    return snap.docs.map((d) => d.data());
+  } catch (error) {
+    handleFirestoreError(error, OperationType.GET, path);
+    return null;
+  }
+};
+
 export const saveAiConfig = async (userId: string, config: any) => {
   const path = `users/${userId}`;
   try {

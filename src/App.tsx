@@ -45,6 +45,7 @@ import ResumePreview from './components/ResumePreview';
 import CoverLetterPreview from './components/CoverLetterPreview';
 import ResumeDiffView from './components/ResumeDiffView';
 import ResumeVersionSwitcher from './components/ResumeVersionSwitcher';
+import AchievementBank from './components/AchievementBank';
 import InterviewPrepCoach from './components/InterviewPrepCoach';
 import MasterResumeWizard from './components/MasterResumeWizard';
 import JobsDeepSearch from './components/JobsDeepSearch';
@@ -1624,6 +1625,8 @@ export default function App() {
                       onDelete={handleDeleteResumeVersion}
                     />
                   )}
+
+                  <AchievementBank />
 
                   {resumeViewMode === 'split' ? (
                     <div className="grid grid-cols-1 lg:grid-cols-12 gap-6 animate-fade-in" id="split-workspace-grid">
