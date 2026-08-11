@@ -26,6 +26,17 @@ import {
 import { ResumeData } from '../types';
 import { useToast } from './Toast';
 import { apiFetch } from '../utils/apiClient';
+import { useAuth } from '../AuthContext';
+import { saveAnswerBank, getAnswerBank } from '../db';
+import { localDb } from '../utils/localDb';
+
+export interface AnswerBankEntry {
+  id: string;
+  question: string;
+  answer: string;
+  jobDescription: string;
+  savedAt: string;
+}
 
 interface InterviewQuestion {
   question: string;
@@ -55,6 +66,46 @@ export default function InterviewPrepCoach({
   aiConfig,
 }: InterviewPrepCoachProps) {
   const { showError, showToast } = useToast();
+  const { user } = useAuth();
+  const [answerBank, setAnswerBank] = useState<AnswerBankEntry[]>([]);
+  const [showAnswerBank, setShowAnswerBank] = useState(false);
+
+  useEffect(() => {
+    if (user) {
+      getAnswerBank(user.uid).then((entries) => {
+        if (entries) setAnswerBank(entries as AnswerBankEntry[]);
+      }).catch((e) => console.error('Failed to load answer bank', e));
+    } else {
+      localDb.getItem<AnswerBankEntry[]>('ats_answer_bank', []).then(setAnswerBank);
+    }
+  }, [user]);
+
+  const persistAnswerBank = (entries: AnswerBankEntry[]) => {
+    setAnswerBank(entries);
+    if (user) {
+      saveAnswerBank(user.uid, entries);
+    } else {
+      localDb.setItem('ats_answer_bank', entries);
+    }
+  };
+
+  const handleSaveToAnswerBank = () => {
+    if (!userAnswer.trim() || !questions?.[activeIdx]) return;
+    const entry: AnswerBankEntry = {
+      id: 'ans_' + Date.now().toString(36) + Math.random().toString(36).slice(2, 8),
+      question: questions[activeIdx].question,
+      answer: userAnswer,
+      jobDescription,
+      savedAt: new Date().toISOString(),
+    };
+    persistAnswerBank([entry, ...answerBank]);
+    showToast('Saved to your Answer Bank.', 'success');
+  };
+
+  const handleDeleteAnswerBankEntry = (id: string) => {
+    persistAnswerBank(answerBank.filter((e) => e.id !== id));
+  };
+
   const [jobDescription, setJobDescription] = useState(initialJobDescription);
   const [questions, setQuestions] = useState<InterviewQuestion[] | null>(null);
   const [loading, setLoading] = useState(false);
@@ -242,6 +293,45 @@ export default function InterviewPrepCoach({
 
   return (
     <div className="space-y-6" id="interview-prep-coach-root">
+      {answerBank.length > 0 && (
+        <div className="bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-800 rounded-2xl overflow-hidden">
+          <button
+            onClick={() => setShowAnswerBank(!showAnswerBank)}
+            className="w-full flex items-center justify-between px-4 py-3 text-xs font-bold text-slate-700 dark:text-slate-300 hover:bg-slate-50 dark:hover:bg-slate-800 transition-colors cursor-pointer"
+            id="btn-toggle-answer-bank"
+          >
+            <span className="flex items-center gap-1.5">
+              <Bookmark className="w-4 h-4 text-indigo-500" />
+              My Answer Bank ({answerBank.length})
+            </span>
+            <ChevronRight className={`w-4 h-4 transition-transform ${showAnswerBank ? 'rotate-90' : ''}`} />
+          </button>
+          <AnimatePresence>
+            {showAnswerBank && (
+              <motion.div initial={{ height: 0 }} animate={{ height: 'auto' }} exit={{ height: 0 }} className="overflow-hidden">
+                <div className="px-4 pb-4 space-y-2 max-h-80 overflow-y-auto">
+                  {answerBank.map((entry) => (
+                    <div key={entry.id} className="border border-slate-100 dark:border-slate-800 rounded-xl p-3 space-y-1">
+                      <div className="flex items-start justify-between gap-2">
+                        <p className="text-xs font-bold text-slate-800 dark:text-slate-200">{entry.question}</p>
+                        <button
+                          onClick={() => handleDeleteAnswerBankEntry(entry.id)}
+                          className="text-slate-300 hover:text-red-500 flex-none cursor-pointer text-[10px] font-bold"
+                          title="Delete this saved answer"
+                        >
+                          Delete
+                        </button>
+                      </div>
+                      <p className="text-[11px] text-slate-500 dark:text-slate-400 whitespace-pre-line">{entry.answer}</p>
+                    </div>
+                  ))}
+                </div>
+              </motion.div>
+            )}
+          </AnimatePresence>
+        </div>
+      )}
+
       {/* 1. ONBOARDING / SETUP VIEW */}
       {!questions && (
         <div className="bg-white border border-slate-200 rounded-2xl p-6 md:p-8 space-y-6 shadow-sm" id="prep-onboarding-panel">
@@ -522,6 +612,17 @@ export default function InterviewPrepCoach({
                         Analyze & Score My Answer
                       </>
                     )}
+                  </button>
+
+                  <button
+                    onClick={handleSaveToAnswerBank}
+                    disabled={!userAnswer.trim()}
+                    className="bg-white hover:bg-slate-50 disabled:bg-slate-50 disabled:text-slate-300 text-slate-700 border border-slate-200 font-bold text-xs py-2 px-4 rounded-lg flex items-center gap-1.5 transition-all cursor-pointer"
+                    id="btn-save-answer-bank"
+                    title="Save this question and answer for future reuse"
+                  >
+                    <Bookmark className="w-3.5 h-3.5" />
+                    Save to Answer Bank
                   </button>
                 </div>
               </div>
