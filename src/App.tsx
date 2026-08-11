@@ -1264,6 +1264,7 @@ export default function App() {
           status: apps[existingAppIndex].status || 'saved',
           jobUrl: jobUrl || apps[existingAppIndex].jobUrl,
           dateUpdated: today,
+          resumeId: user ? activeResumeId : apps[existingAppIndex].resumeId,
           notes: (apps[existingAppIndex].notes || '') + `\n[System Sync]: Tailored resume re-synced on ${today}.`
         };
       } else {
@@ -1276,6 +1277,7 @@ export default function App() {
           jobUrl: jobUrl,
           dateAdded: today,
           dateUpdated: today,
+          resumeId: user ? activeResumeId : undefined,
           notes: `[System Sync]: Tailored resume successfully synchronized with Job Tracker!`
         });
       }

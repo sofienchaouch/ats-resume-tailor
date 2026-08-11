@@ -1,9 +1,10 @@
 import React, { useState, useEffect, FormEvent } from 'react';
 import { motion, AnimatePresence } from 'motion/react';
 import { useAuth } from '../AuthContext';
-import { getJobApplications, saveJobApplications } from '../db';
+import { getJobApplications, saveJobApplications, listResumeVersions } from '../db';
 import { localDb } from '../utils/localDb';
 import { useToast } from './Toast';
+import FunnelAnalytics from './FunnelAnalytics';
 import { 
   Briefcase, 
   Plus, 
@@ -42,6 +43,8 @@ export interface JobApplication {
   contactEmail?: string;
   notes?: string;
   gmailThreadId?: string;
+  /** Which resume version (from the multi-version resume feature) was used to apply, if known. */
+  resumeId?: string;
 }
 
 const STAGES = [
@@ -70,6 +73,7 @@ export default function ApplicationTracker() {
   const [notes, setNotes] = useState('');
 
   const { user } = useAuth();
+  const [resumeVersionNames, setResumeVersionNames] = useState<Record<string, string>>({});
 
   // Load from LocalStorage / Firebase
   useEffect(() => {
@@ -87,6 +91,10 @@ export default function ApplicationTracker() {
       getJobApplications(user.uid).then(saved => {
         if (saved) setApplications(saved);
       }).catch(err => console.error('Failed to parse saved applications:', err));
+
+      listResumeVersions(user.uid).then(versions => {
+        setResumeVersionNames(Object.fromEntries(versions.map(v => [v.id, v.name])));
+      }).catch(err => console.error('Failed to load resume versions for funnel analytics:', err));
     } else {
       loadGuestApps();
     }
@@ -354,6 +362,9 @@ export default function ApplicationTracker() {
           </div>
         </div>
       </div>
+
+      {/* 1b. FUNNEL ANALYTICS BY RESUME VERSION */}
+      {user && <FunnelAnalytics applications={applications} versionNames={resumeVersionNames} />}
 
       {/* 2. PIPELINE BOARD / KANBAN */}
       <div className="flex justify-between items-center bg-white dark:bg-slate-900 border border-slate-150 dark:border-slate-800 p-4 rounded-2xl shadow-xs">
