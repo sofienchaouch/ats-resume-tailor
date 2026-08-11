@@ -22,9 +22,11 @@ import {
   Plus,
   ChevronDown,
   ChevronUp,
-  Users
+  Users,
+  Download
 } from 'lucide-react';
 import { googleSignIn, initAuth, logout, getAccessToken } from '../lib/firebase';
+import { buildInterviewIcs } from '../utils/ics';
 import { User as FirebaseUser } from 'firebase/auth';
 import { ResumeData, CoverLetterData } from '../types';
 import { useAuth } from '../AuthContext';
@@ -568,6 +570,34 @@ export default function ApplicationIntegrationsHub({
     } finally {
       setIsAddingToCalendar(false);
     }
+  };
+
+  // Plain .ics download — works without a Google account, unlike handleScheduleAndTrack above.
+  const handleDownloadIcs = () => {
+    if (!formCompany.trim() || !formRole.trim() || !formDate) {
+      showToast('Please fill out Company Name, Role and Interview Date.', 'warning');
+      return;
+    }
+
+    const icsContent = buildInterviewIcs({
+      company: formCompany,
+      role: formRole,
+      type: formType,
+      date: formDate,
+      time: formTime,
+      link: formLink,
+      notes: formNotes,
+    });
+
+    const blob = new Blob([icsContent], { type: 'text/calendar;charset=utf-8' });
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement('a');
+    a.href = url;
+    a.download = `Interview_${formCompany.replace(/\s+/g, '_')}.ics`;
+    document.body.appendChild(a);
+    a.click();
+    document.body.removeChild(a);
+    URL.revokeObjectURL(url);
   };
 
   // Generate networking suggestions adapted for role & CV
@@ -1489,6 +1519,15 @@ export default function ApplicationIntegrationsHub({
                             Schedule on Google Calendar & Link to Tracker
                           </>
                         )}
+                      </button>
+
+                      <button
+                        onClick={handleDownloadIcs}
+                        className="w-full bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-800 hover:bg-slate-50 dark:hover:bg-slate-800 text-slate-700 dark:text-slate-300 font-bold text-xs py-2 px-4 rounded-xl flex items-center justify-center gap-1.5 cursor-pointer"
+                        title="Download a .ics file for any calendar app (no Google account needed)"
+                      >
+                        <Download className="w-3.5 h-3.5" />
+                        Download .ics (any calendar app)
                       </button>
 
                       {calendarSuccess && (
