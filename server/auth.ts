@@ -39,7 +39,11 @@ export async function attachUser(req: Request, res: Response, next: NextFunction
 // req.body.aiConfig.apiKey by the middleware in server.ts).
 export function requireServerKey(req: Request, res: Response, next: NextFunction) {
   const hasOwnKey = Boolean(req.body?.aiConfig?.apiKey && String(req.body.aiConfig.apiKey).trim() !== "");
-  if (!req.user && !hasOwnKey) {
+  // claude-cli authenticates via a local CLI session, not a key or Firebase
+  // sign-in — its own ENABLE_CLAUDE_CLI_PROVIDER check (server.ts) is the real
+  // gate. Without this exemption a guest picking it would 401 here first.
+  const isLocalCliProvider = req.body?.aiConfig?.provider === "claude-cli";
+  if (!req.user && !hasOwnKey && !isLocalCliProvider) {
     return res.status(401).json({
       error: "Sign in or provide your own AI API key in Settings to use this feature.",
       code: "AUTH_OR_KEY_REQUIRED",

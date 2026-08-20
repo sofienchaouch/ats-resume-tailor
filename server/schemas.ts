@@ -63,7 +63,7 @@ const resumeDataSchema = z.object({
 
 const aiConfigSchema = z
   .object({
-    provider: z.enum(["gemini", "openai", "custom", "openrouter"]).optional(),
+    provider: z.enum(["gemini", "openai", "custom", "openrouter", "claude-cli"]).optional(),
     apiKey: z.string().max(500).optional(),
     model: z.string().max(200).optional(),
     customEndpoint: z.string().max(500).optional(),

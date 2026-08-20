@@ -110,7 +110,7 @@ export interface CoverLetterData {
 }
 
 export interface AiConfig {
-  provider: 'gemini' | 'openai' | 'custom' | 'openrouter';
+  provider: 'gemini' | 'openai' | 'custom' | 'openrouter' | 'claude-cli';
   apiKey: string;
   model: string;
   customEndpoint?: string;

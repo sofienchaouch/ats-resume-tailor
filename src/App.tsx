@@ -2287,6 +2287,7 @@ export default function App() {
                       if (provider === 'openai') defaultModel = 'gpt-4o';
                       else if (provider === 'openrouter') defaultModel = 'google/gemini-2.5-flash';
                       else if (provider === 'custom') defaultModel = 'llama3';
+                      else if (provider === 'claude-cli') defaultModel = 'sonnet';
                       setAiConfig({ ...aiConfig, provider, model: defaultModel });
                     }}
                     className="w-full bg-slate-50 dark:bg-slate-800 text-slate-950 dark:text-white border border-slate-200 dark:border-slate-800 rounded-xl px-3 py-2 text-xs outline-none focus:ring-2 focus:ring-indigo-500 font-semibold"
@@ -2295,30 +2296,38 @@ export default function App() {
                     <option value="openai">OpenAI (GPT Models)</option>
                     <option value="openrouter">OpenRouter (Multi-Provider API)</option>
                     <option value="custom">Custom / OpenAI-Compatible (Anthropic, Local LLMs, etc.)</option>
+                    <option value="claude-cli">Claude Code CLI (local dev only, no key)</option>
                   </select>
+                  {aiConfig.provider === 'claude-cli' && (
+                    <p className="text-[10px] text-amber-600 dark:text-amber-400 font-semibold">
+                      Uses the Claude Code CLI on this machine (whatever subscription is logged in there). Local development only — this cannot work on a deployed server and requires ENABLE_CLAUDE_CLI_PROVIDER=true in .env.
+                    </p>
+                  )}
                 </div>
 
-                <div className="space-y-1.5">
-                  <label className="text-xs font-bold text-slate-700 dark:text-slate-300 flex justify-between items-center">
-                    <span>API Key</span>
-                    <span className="text-[10px] font-normal text-slate-400">(Optional - Leaves safe default key active if blank)</span>
-                  </label>
-                  <input
-                    type="password"
-                    placeholder={
-                      aiConfig.provider === 'gemini' 
-                        ? 'AI Studio Gemini API Key...' 
-                        : aiConfig.provider === 'openai' 
-                        ? 'OpenAI API Key (sk-...)' 
-                        : aiConfig.provider === 'openrouter'
-                        ? 'OpenRouter API Key (sk-or-...)'
-                        : 'Enter API token...'
-                    }
-                    value={aiConfig.apiKey}
-                    onChange={(e) => setAiConfig({ ...aiConfig, apiKey: e.target.value })}
-                    className="w-full bg-slate-50 dark:bg-slate-800 text-slate-950 dark:text-white border border-slate-200 dark:border-slate-800 rounded-xl px-3 py-2 text-xs outline-none focus:ring-2 focus:ring-indigo-500 font-mono"
-                  />
-                </div>
+                {aiConfig.provider !== 'claude-cli' && (
+                  <div className="space-y-1.5">
+                    <label className="text-xs font-bold text-slate-700 dark:text-slate-300 flex justify-between items-center">
+                      <span>API Key</span>
+                      <span className="text-[10px] font-normal text-slate-400">(Optional - Leaves safe default key active if blank)</span>
+                    </label>
+                    <input
+                      type="password"
+                      placeholder={
+                        aiConfig.provider === 'gemini'
+                          ? 'AI Studio Gemini API Key...'
+                          : aiConfig.provider === 'openai'
+                          ? 'OpenAI API Key (sk-...)'
+                          : aiConfig.provider === 'openrouter'
+                          ? 'OpenRouter API Key (sk-or-...)'
+                          : 'Enter API token...'
+                      }
+                      value={aiConfig.apiKey}
+                      onChange={(e) => setAiConfig({ ...aiConfig, apiKey: e.target.value })}
+                      className="w-full bg-slate-50 dark:bg-slate-800 text-slate-950 dark:text-white border border-slate-200 dark:border-slate-800 rounded-xl px-3 py-2 text-xs outline-none focus:ring-2 focus:ring-indigo-500 font-mono"
+                    />
+                  </div>
+                )}
 
                 <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
                   <div className="space-y-1.5">

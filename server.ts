@@ -8,6 +8,7 @@ import puppeteer from "puppeteer-core";
 import chromium from "@sparticuz/chromium";
 import fs from "fs";
 import os from "os";
+import { spawn } from "child_process";
 import { rateLimit, ipKeyGenerator } from "express-rate-limit";
 import type { ZodType } from "zod";
 import * as schemas from "./server/schemas";
@@ -284,6 +285,123 @@ async function callOpenAICompatible(params: {
   };
 }
 
+// Flattens the same `contents` shape callOpenAICompatible understands into a
+// single prompt string, since the Claude Code CLI's -p mode takes one prompt
+// on stdin rather than a messages array.
+function flattenContentsToPrompt(contents: any, systemInstruction?: any): string {
+  const parts: string[] = [];
+
+  if (systemInstruction) {
+    const sysText = typeof systemInstruction === "string" ? systemInstruction : (systemInstruction.text || "");
+    if (sysText) parts.push(sysText);
+  }
+
+  if (typeof contents === "string") {
+    parts.push(contents);
+  } else if (Array.isArray(contents)) {
+    for (const item of contents) {
+      if (typeof item === "string") {
+        parts.push(item);
+      } else if (item?.inlineData) {
+        // Same degradation as callOpenAICompatible's non-Gemini path: binary
+        // attachments (resume PDFs/DOCX) become a text placeholder, not real content.
+        parts.push(`[Attached Base64 Document of type ${item.inlineData.mimeType}]`);
+      } else if (typeof item === "object" && item.text) {
+        parts.push(item.text);
+      }
+    }
+  } else {
+    parts.push(JSON.stringify(contents));
+  }
+
+  return parts.join("\n\n");
+}
+
+/**
+ * Routes a generation request through the local Claude Code CLI, authenticated
+ * to whatever subscription is logged into `claude` on this machine — no API key.
+ *
+ * LOCAL DEVELOPMENT ONLY. The CLI binary does not exist on any deployed server,
+ * and routing other users' requests through a personal subscription violates
+ * Anthropic's terms of service. Gated behind ENABLE_CLAUDE_CLI_PROVIDER so it
+ * can never silently activate outside a local .env.
+ */
+async function callClaudeCli(params: {
+  model: string;
+  contents: any;
+  config?: any;
+}): Promise<any> {
+  if (process.env.ENABLE_CLAUDE_CLI_PROVIDER !== "true") {
+    throw new Error(
+      "The Claude Code CLI provider is local-development-only and is disabled. " +
+      "Set ENABLE_CLAUDE_CLI_PROVIDER=true in your local .env to use it. " +
+      "This provider can never run in a deployed environment — it shells out to a CLI " +
+      "authenticated to a personal subscription on this machine."
+    );
+  }
+
+  let prompt = flattenContentsToPrompt(params.contents, params.config?.systemInstruction);
+
+  // Same schema-injection trick as callOpenAICompatible: only Gemini has native
+  // structured output, so every other path asks nicely in the prompt instead.
+  if (params.config?.responseMimeType === "application/json" && params.config?.responseSchema) {
+    prompt += `\n\nCRITICAL: Your output MUST be a valid JSON object matching this JSON Schema:\n${JSON.stringify(params.config.responseSchema, null, 2)}\n\nOutput ONLY the JSON object. No markdown code fences, no other text.`;
+  }
+
+  // Model names in this app are Gemini-shaped (e.g. "gemini-3.5-flash"); the CLI
+  // expects its own aliases (sonnet/opus/haiku). Anything not already a Claude
+  // model name falls back to the CLI's default via omission.
+  const claudeModelAliases = new Set(["sonnet", "opus", "haiku"]);
+  const requestedModel = params.model || "";
+  const modelArgs = claudeModelAliases.has(requestedModel) || requestedModel.startsWith("claude-")
+    ? ["--model", requestedModel]
+    : [];
+
+  return new Promise((resolve, reject) => {
+    const child = spawn("claude", ["-p", "--output-format", "json", ...modelArgs], {
+      stdio: ["pipe", "pipe", "pipe"],
+    });
+
+    let stdout = "";
+    let stderr = "";
+    child.stdout.on("data", (d) => { stdout += d.toString(); });
+    child.stderr.on("data", (d) => { stderr += d.toString(); });
+
+    child.on("error", (err) => {
+      reject(new Error(`Failed to launch the Claude Code CLI: ${err.message}. Is "claude" installed and on PATH?`));
+    });
+
+    child.on("close", (code) => {
+      if (code !== 0) {
+        reject(new Error(`Claude Code CLI exited with code ${code}: ${stderr || "no error output"}`));
+        return;
+      }
+      try {
+        const envelope = JSON.parse(stdout);
+        if (envelope.is_error) {
+          reject(new Error(`Claude Code CLI reported an error: ${envelope.result || stderr || "unknown error"}`));
+          return;
+        }
+        const resultText = envelope.result || "";
+        if (!resultText) {
+          reject(new Error(`Claude Code CLI returned an empty result. Raw output: ${stdout.slice(0, 500)}`));
+          return;
+        }
+        resolve({ text: resultText, raw: envelope });
+      } catch (parseErr: any) {
+        reject(new Error(`Failed to parse Claude Code CLI output as JSON: ${parseErr.message}. Raw output: ${stdout.slice(0, 500)}`));
+      }
+    });
+
+    // Prompt goes on stdin, not argv: real prompts here carry the full resume
+    // JSON plus a job description (zod allows up to 20k chars each), which
+    // would risk hitting Windows' ~32k command-line length limit as an arg,
+    // and stdin sidesteps shell quoting/injection entirely.
+    child.stdin.write(prompt);
+    child.stdin.end();
+  });
+}
+
 function repairIncompleteJson(jsonStr: string): string {
   let cleaned = jsonStr.trim();
   if (!cleaned) return "{}";
@@ -465,7 +583,7 @@ async function generateContentWithRetry(params: {
   contents: any;
   config?: any;
   aiConfig?: {
-    provider?: 'gemini' | 'openai' | 'custom' | 'openrouter';
+    provider?: 'gemini' | 'openai' | 'custom' | 'openrouter' | 'claude-cli';
     apiKey?: string;
     model?: string;
     customEndpoint?: string;
@@ -479,10 +597,20 @@ async function generateContentWithRetry(params: {
     customApiKey = undefined;
   }
 
-  // Gracefully fallback to Gemini system default if a third-party provider is selected but no custom key is provided
-  if (provider !== 'gemini' && !customApiKey) {
+  // Gracefully fallback to Gemini system default if a third-party provider is selected but no custom key is provided.
+  // claude-cli is exempt: it authenticates via a local CLI session, not a key, so
+  // "no key provided" is its normal, expected state rather than a reason to fall back.
+  if (provider !== 'gemini' && provider !== 'claude-cli' && !customApiKey) {
     console.log(`[AI Routing] No valid API key provided for provider "${provider}". Falling back to Google Gemini with built-in system credentials.`);
     provider = 'gemini';
+  }
+
+  if (provider === 'claude-cli') {
+    return await callClaudeCli({
+      model: params.aiConfig?.model || params.model,
+      contents: params.contents,
+      config: params.config,
+    });
   }
 
   if (provider === 'openai' || provider === 'custom' || provider === 'openrouter') {
