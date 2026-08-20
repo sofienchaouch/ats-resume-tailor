@@ -20,9 +20,6 @@ import {
   Globe
 } from 'lucide-react';
 import { CoverLetterData, KeywordMatch, AiConfig } from '../types';
-import { Document, Packer, Paragraph, TextRun, AlignmentType } from 'docx';
-import { jsPDF } from 'jspdf';
-import html2canvas from 'html2canvas';
 import { useToast } from './Toast';
 import { apiFetch, apiFetchBlob } from '../utils/apiClient';
 
@@ -257,7 +254,8 @@ export default function CoverLetterPreview({
     window.print();
   };
 
-  const handleExportDoc = () => {
+  const handleExportDoc = async () => {
+    const { Document, Packer, Paragraph, TextRun, AlignmentType } = await import('docx');
     const docChildren: any[] = [];
 
     // 1. Sender name heading

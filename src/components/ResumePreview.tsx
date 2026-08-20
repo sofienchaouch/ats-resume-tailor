@@ -1,9 +1,6 @@
 import { useState } from 'react';
 import { Edit2, Check, Eye, HelpCircle, FileDown, Printer, Plus, Trash2, Globe, Sparkles, Loader2, AlertCircle, Sparkle } from 'lucide-react';
 import { ResumeData, KeywordMatch } from '../types';
-import { Document, Packer, Paragraph, TextRun, AlignmentType } from 'docx';
-import { jsPDF } from 'jspdf';
-import html2canvas from 'html2canvas';
 import SpellcheckField from './SpellcheckField';
 import { useToast } from './Toast';
 import { apiFetch, apiFetchBlob } from '../utils/apiClient';
@@ -596,7 +593,11 @@ export default function ResumePreview({
     });
   };
 
-  const handleExportDoc = () => {
+  const handleExportDoc = async () => {
+    // docx is only needed for this one export action, so it's dynamically
+    // imported here instead of sitting in ResumePreview's chunk for every
+    // user who never clicks "Export DOCX".
+    const { Document, Packer, Paragraph, TextRun, AlignmentType } = await import('docx');
     const exportFont = layoutStyle === 'executive' ? 'Georgia' : 'Arial';
     
     // Collect contact details string
