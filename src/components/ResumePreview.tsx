@@ -1684,7 +1684,7 @@ export default function ResumePreview({
               enableSpellcheck={enableSpellcheck}
             />
           ) : (
-            <p className={`${activeFont.body} text-slate-700 dark:text-slate-300 leading-relaxed text-justify`}>
+            <p className={`${activeFont.body} text-slate-700 dark:text-slate-300 leading-relaxed`}>
               {renderHighlightedText(resumeData.summary)}
             </p>
           )}
@@ -1692,7 +1692,7 @@ export default function ResumePreview({
 
         {/* Experience Section */}
         <div className={`${sectionSpacing === 'compact' ? 'pt-3' : sectionSpacing === 'normal' ? 'pt-6' : 'pt-8'}`} id="resume-experience-section" style={{ order: sectionOrder.indexOf('experience') }}>
-          <div className="flex items-center justify-between border-b border-slate-100 dark:border-slate-800 pb-1 mb-3">
+          <div className="flex items-center justify-between border-b border-slate-100 dark:border-slate-800 pb-1 mb-3 break-after-avoid-page">
             <h2 className={`${activeFont.heading} font-bold text-slate-950 dark:text-white uppercase tracking-wider`}>
               Professional Experience
             </h2>
@@ -1790,7 +1790,7 @@ export default function ResumePreview({
                 {/* Bullet Points */}
                 <ul className="list-disc list-outside ml-4 space-y-1 text-xs text-slate-700" id={`job-bullets-${expIdx}`}>
                   {(job.bullets || []).map((bullet, bulletIdx) => (
-                    <li key={bulletIdx} className="relative group/bullet leading-relaxed text-justify" id={`job-bullet-item-${expIdx}-${bulletIdx}`}>
+                    <li key={bulletIdx} className="relative group/bullet leading-relaxed" id={`job-bullet-item-${expIdx}-${bulletIdx}`}>
                       {isEditing ? (
                         <div className="flex items-start gap-1 w-full" id={`edit-bullet-${expIdx}-${bulletIdx}`}>
                           <SpellcheckField
@@ -1834,7 +1834,7 @@ export default function ResumePreview({
 
         {/* Skills Section */}
         <div className="pt-6 space-y-2.5" id="resume-skills-section" style={{ order: sectionOrder.indexOf('skills') }}>
-          <div className="flex items-center justify-between border-b border-slate-100 pb-1">
+          <div className="flex items-center justify-between border-b border-slate-100 pb-1 break-after-avoid-page">
             <h2 className="text-sm font-bold text-slate-950 uppercase tracking-wider">
               Skills & Expertise
             </h2>
@@ -1909,7 +1909,7 @@ export default function ResumePreview({
 
         {/* Education Section */}
         <div className="pt-6 space-y-3" id="resume-education-section" style={{ order: sectionOrder.indexOf('education') }}>
-          <div className="flex items-center justify-between border-b border-slate-100 pb-1">
+          <div className="flex items-center justify-between border-b border-slate-100 pb-1 break-after-avoid-page">
             <h2 className="text-sm font-bold text-slate-950 uppercase tracking-wider">
               Education
             </h2>
@@ -2000,7 +2000,7 @@ export default function ResumePreview({
         {/* Projects Section */}
         {((resumeData.projects && resumeData.projects.length > 0) || isEditing) && (
           <div className="pt-6 space-y-3" id="resume-projects-section" style={{ order: sectionOrder.indexOf('projects') }}>
-            <div className="flex items-center justify-between border-b border-slate-100 pb-1">
+            <div className="flex items-center justify-between border-b border-slate-100 pb-1 break-after-avoid-page">
               <h2 className="text-sm font-bold text-slate-950 uppercase tracking-wider">
                 Projects
               </h2>
@@ -2107,7 +2107,7 @@ export default function ResumePreview({
         {/* Certifications Section */}
         {((resumeData.certifications && resumeData.certifications.length > 0) || isEditing) && (
           <div className="pt-6 space-y-2" id="resume-certifications-section" style={{ order: sectionOrder.indexOf('certifications') }}>
-            <div className="flex items-center justify-between border-b border-slate-100 pb-1">
+            <div className="flex items-center justify-between border-b border-slate-100 pb-1 break-after-avoid-page">
               <h2 className="text-sm font-bold text-slate-950 uppercase tracking-wider">
                 Certifications
               </h2>
@@ -2184,7 +2184,7 @@ export default function ResumePreview({
         {/* Languages Section */}
         {((resumeData.languages && resumeData.languages.length > 0) || isEditing) && (
           <div className="pt-6 space-y-2" id="resume-languages-section" style={{ order: sectionOrder.indexOf('languages') }}>
-            <div className="flex items-center justify-between border-b border-slate-100 pb-1">
+            <div className="flex items-center justify-between border-b border-slate-100 pb-1 break-after-avoid-page">
               <h2 className="text-sm font-bold text-slate-950 uppercase tracking-wider">
                 Languages
               </h2>
