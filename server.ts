@@ -358,7 +358,14 @@ async function callClaudeCli(params: {
     : [];
 
   return new Promise((resolve, reject) => {
-    const child = spawn("claude", ["-p", "--output-format", "json", ...modelArgs], {
+    // --tools "" disables every tool (WebFetch, Bash, Read, etc). Without this,
+    // the CLI runs as a full agentic session: it can attempt tool calls (e.g.
+    // WebFetch on a URL mentioned in the prompt), which get auto-blocked in this
+    // headless/non-interactive context, and the model's own narration about being
+    // blocked/needing permission/retrying leaks into the result text — which then
+    // gets parsed straight into resume JSON fields. This provider is a plain
+    // text-in/JSON-out proxy and should never have tool access.
+    const child = spawn("claude", ["-p", "--output-format", "json", "--tools", "", ...modelArgs], {
       stdio: ["pipe", "pipe", "pipe"],
     });
 
