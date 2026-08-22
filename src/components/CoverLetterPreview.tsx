@@ -73,7 +73,7 @@ function InlineInput({
       value={value}
       onChange={(e) => onChange(e.target.value)}
       placeholder={placeholder}
-      className={`bg-slate-50/50 hover:bg-slate-100/50 focus:bg-indigo-50/20 border border-dashed border-slate-200 hover:border-slate-400 focus:border-indigo-500 rounded-lg px-2.5 py-1.5 outline-none text-slate-900 transition-all focus:ring-1 focus:ring-indigo-100/30 ${className}`}
+      className={`bg-slate-50/50 hover:bg-slate-100/50 focus:bg-indigo-50/20 border border-dashed border-slate-200 hover:border-slate-400 focus:border-indigo-500 rounded-lg px-2.5 py-1.5 outline-none text-slate-900 dark:text-white transition-all focus:ring-1 focus:ring-indigo-100/30 ${className}`}
     />
   );
 }
@@ -647,7 +647,7 @@ export default function CoverLetterPreview({
 
             <button
               onClick={handleCopyText}
-              className="text-xs font-bold text-slate-700 hover:text-slate-900 bg-white border border-slate-200 px-3 py-1.5 rounded-lg flex items-center gap-1.5 transition-all cursor-pointer hover:bg-slate-50 shadow-2xs"
+              className="text-xs font-bold text-slate-700 hover:text-slate-900 dark:text-white bg-white border border-slate-200 px-3 py-1.5 rounded-lg flex items-center gap-1.5 transition-all cursor-pointer hover:bg-slate-50 shadow-2xs"
               id="btn-cl-copy"
               title="Copy cover letter text to clipboard"
             >
@@ -657,7 +657,7 @@ export default function CoverLetterPreview({
 
             <button
               onClick={handleDownloadTxt}
-              className="text-xs font-bold text-slate-700 hover:text-slate-900 bg-white border border-slate-200 px-3 py-1.5 rounded-lg flex items-center gap-1.5 transition-all cursor-pointer hover:bg-slate-50 shadow-2xs"
+              className="text-xs font-bold text-slate-700 hover:text-slate-900 dark:text-white bg-white border border-slate-200 px-3 py-1.5 rounded-lg flex items-center gap-1.5 transition-all cursor-pointer hover:bg-slate-50 shadow-2xs"
               id="btn-cl-download-txt"
               title="Download Cover Letter as Plain Text .txt file"
             >
@@ -667,7 +667,7 @@ export default function CoverLetterPreview({
 
             <button
               onClick={handleExportDoc}
-              className="text-xs font-bold text-slate-700 hover:text-slate-900 bg-white border border-slate-200 px-3 py-1.5 rounded-lg flex items-center gap-1.5 transition-all cursor-pointer hover:bg-slate-50 shadow-2xs"
+              className="text-xs font-bold text-slate-700 hover:text-slate-900 dark:text-white bg-white border border-slate-200 px-3 py-1.5 rounded-lg flex items-center gap-1.5 transition-all cursor-pointer hover:bg-slate-50 shadow-2xs"
               id="btn-cl-download-docx"
               title="Download Cover Letter as Word .docx document"
             >
@@ -678,7 +678,7 @@ export default function CoverLetterPreview({
             <button
               onClick={handleExportPdf}
               disabled={isExportingPdf}
-              className="text-xs font-bold text-slate-700 hover:text-slate-900 bg-white border border-slate-200 px-3 py-1.5 rounded-lg flex items-center gap-1.5 transition-all cursor-pointer hover:bg-slate-50 disabled:opacity-50 disabled:cursor-not-allowed shadow-2xs"
+              className="text-xs font-bold text-slate-700 hover:text-slate-900 dark:text-white bg-white border border-slate-200 px-3 py-1.5 rounded-lg flex items-center gap-1.5 transition-all cursor-pointer hover:bg-slate-50 disabled:opacity-50 disabled:cursor-not-allowed shadow-2xs"
               id="btn-cl-download-pdf"
               title="Generate and download Cover Letter as PDF file"
             >
@@ -763,7 +763,7 @@ export default function CoverLetterPreview({
                   <InlineInput
                     value={coverLetter.subject}
                     onChange={(v) => handleFieldChange('subject', v)}
-                    className="text-sm font-bold text-slate-900 bg-white border-slate-200 focus:border-indigo-500 w-full"
+                    className="text-sm font-bold text-slate-900 dark:text-white bg-white border-slate-200 focus:border-indigo-500 w-full"
                     placeholder="Subject Line"
                   />
                 </div>
@@ -895,7 +895,7 @@ export default function CoverLetterPreview({
         {/* ATS Cover Letter Score */}
         <div className="bg-white border border-slate-200 rounded-2xl p-5 space-y-4 shadow-sm">
           <div className="space-y-1">
-            <h3 className="text-sm font-extrabold text-slate-900 flex items-center gap-1.5">
+            <h3 className="text-sm font-extrabold text-slate-900 dark:text-white flex items-center gap-1.5">
               <Briefcase className="w-4.5 h-4.5 text-indigo-600" />
               Cover Letter ATS Audit
             </h3>

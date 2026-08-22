@@ -1889,7 +1889,7 @@ export default function ResumePreview({
                   </div>
                 ) : (
                   <>
-                    <span className="font-bold text-slate-900 w-full sm:w-1/4" id={`skill-cat-title-${idx}`}>
+                    <span className="font-bold text-slate-900 dark:text-white w-full sm:w-1/4" id={`skill-cat-title-${idx}`}>
                       {skillCat.category}:
                     </span>
                     <span className="text-slate-700 w-full sm:w-3/4" id={`skill-cat-items-${idx}`}>
@@ -2234,7 +2234,7 @@ export default function ResumePreview({
 
             {/* 2. EXECUTIVE SERIF LAYOUT */}
             {layoutStyle === 'executive' && (
-              <div className="animate-fade-in text-slate-900 flex flex-col gap-y-6 font-serif" id="executive-layout-container">
+              <div className="animate-fade-in text-slate-900 dark:text-white flex flex-col gap-y-6 font-serif" id="executive-layout-container">
                 {/* Header block centered */}
                 <div className="text-center space-y-2 pb-4 border-b-4 border-double border-slate-800" id="executive-header" style={{ order: -1 }}>
                   {isEditing ? (
@@ -2542,7 +2542,7 @@ export default function ResumePreview({
                     <div className="space-y-2 text-xs">
                       {(resumeData.skills || []).map((skillCat, idx) => (
                         <div key={idx} className="flex flex-col sm:flex-row sm:items-start gap-1" id={`modern-skill-${idx}`}>
-                          <span className="font-bold text-slate-900 w-full sm:w-1/3">{skillCat.category}</span>
+                          <span className="font-bold text-slate-900 dark:text-white w-full sm:w-1/3">{skillCat.category}</span>
                           <span className="text-slate-600 w-full sm:w-2/3">{(skillCat.items || []).join(', ')}</span>
                         </div>
                       ))}
