@@ -45,6 +45,21 @@ const SOFT_SKILL_TERMS = new Set([
   "stakeholder management", "decision-making", "decision making",
 ]);
 
+// Business/industry-domain vocabulary — distinct from hard technical skills
+// and soft skills. Without this, classifyCategory had no path to ever return
+// 'industry', so that category (and its radar-chart axis) was permanently
+// empty for every tailor result regardless of the job description.
+const INDUSTRY_TERMS = new Set([
+  "saas", "b2b", "b2c", "fintech", "healthtech", "healthcare", "e-commerce",
+  "ecommerce", "hospitality", "insurance", "banking", "compliance", "regulatory",
+  "gdpr", "hipaa", "pci", "sox", "supply chain", "logistics", "retail",
+  "manufacturing", "telecom", "telecommunications", "media", "advertising",
+  "marketplace", "enterprise", "startup", "nonprofit", "government", "edtech",
+  "proptech", "martech", "biotech", "pharma", "pharmaceutical", "automotive",
+  "aerospace", "energy", "utilities", "real estate", "gaming", "esports",
+  "cybersecurity", "risk management", "kyc", "aml", "iso 27001",
+]);
+
 function normalize(text: string): string {
   return text.toLowerCase();
 }
@@ -66,8 +81,9 @@ interface CandidateTerm {
 
 /** Extracts candidate keyword phrases (1-3 words) from a job description by frequency. */
 function extractCandidateTerms(jobDescription: string, maxTerms = 20): CandidateTerm[] {
+  // Kept for the dictionary regex tests further down, which match against the
+  // whole document rather than per-sentence tokens.
   const text = normalize(jobDescription).replace(/[^a-z0-9+#./\s-]/g, " ");
-  const rawTokens = text.split(/\s+/).filter(Boolean);
 
   const isMeaningful = (word: string) =>
     word.length > 0 &&
@@ -80,18 +96,36 @@ function extractCandidateTerms(jobDescription: string, maxTerms = 20): Candidate
     counts.set(term, (counts.get(term) || 0) + 1);
   };
 
-  for (let i = 0; i < rawTokens.length; i++) {
-    const w1 = rawTokens[i];
-    if (isMeaningful(w1)) {
-      bumpCount(w1);
-    }
-    const w2 = rawTokens[i + 1];
-    if (w1 && w2 && isMeaningful(w1) && isMeaningful(w2)) {
-      bumpCount(`${w1} ${w2}`);
-    }
-    const w3 = rawTokens[i + 2];
-    if (w1 && w2 && w3 && isMeaningful(w1) && isMeaningful(w2) && isMeaningful(w3)) {
-      bumpCount(`${w1} ${w2} ${w3}`);
+  // Split into sentences before building n-grams, so a bigram/trigram never
+  // splices words from unrelated clauses together (e.g. "...SaaS startup.
+  // Requires Python..." must not produce "startup requires" as a candidate
+  // phrase). Without this, sentence-boundary tokens like "postgresql." also
+  // kept their trailing period as part of the token, creating punctuation-
+  // polluted near-duplicate phrases that — being longer strings — won ties
+  // against real single-word terms under the length-based sort tiebreak
+  // below, crowding real keywords (saas, gdpr, communication...) out of the
+  // top results entirely.
+  const sentences = normalize(jobDescription).split(/[.!?]+/);
+  for (const sentence of sentences) {
+    const cleanedSentence = sentence.replace(/[^a-z0-9+#./\s-]/g, " ");
+    const rawTokens = cleanedSentence
+      .split(/\s+/)
+      .map((t) => t.replace(/^[./-]+|[./-]+$/g, ""))
+      .filter(Boolean);
+
+    for (let i = 0; i < rawTokens.length; i++) {
+      const w1 = rawTokens[i];
+      if (isMeaningful(w1)) {
+        bumpCount(w1);
+      }
+      const w2 = rawTokens[i + 1];
+      if (w1 && w2 && isMeaningful(w1) && isMeaningful(w2)) {
+        bumpCount(`${w1} ${w2}`);
+      }
+      const w3 = rawTokens[i + 2];
+      if (w1 && w2 && w3 && isMeaningful(w1) && isMeaningful(w2) && isMeaningful(w3)) {
+        bumpCount(`${w1} ${w2} ${w3}`);
+      }
     }
   }
 
@@ -105,9 +139,24 @@ function extractCandidateTerms(jobDescription: string, maxTerms = 20): Candidate
       counts.set(known, 2);
     }
   }
+  // Same floor as TECHNICAL_TERMS above (2, not 1): a floor of 1 just ties
+  // with the incidental frequency-1 multi-word phrases n-gram extraction
+  // always produces, and those longer phrases win the length tiebreak in the
+  // sort below — burying recognized dictionary terms (e.g. "saas", "gdpr")
+  // under phrase variants of themselves ("fintech saas startup") instead of
+  // ever surfacing as their own clean, matchable keyword.
   for (const known of SOFT_SKILL_TERMS) {
-    if (!counts.has(known) && new RegExp(`\\b${escapeRegex(known)}\\b`, "i").test(text)) {
-      counts.set(known, 1);
+    if (counts.has(known) && counts.get(known)! < 2) {
+      counts.set(known, 2);
+    } else if (!counts.has(known) && new RegExp(`\\b${escapeRegex(known)}\\b`, "i").test(text)) {
+      counts.set(known, 2);
+    }
+  }
+  for (const known of INDUSTRY_TERMS) {
+    if (counts.has(known) && counts.get(known)! < 2) {
+      counts.set(known, 2);
+    } else if (!counts.has(known) && new RegExp(`\\b${escapeRegex(known)}\\b`, "i").test(text)) {
+      counts.set(known, 2);
     }
   }
 
@@ -120,6 +169,7 @@ function extractCandidateTerms(jobDescription: string, maxTerms = 20): Candidate
 function classifyCategory(term: string): KeywordMatch["category"] {
   if (TECHNICAL_TERMS.has(term)) return "technical";
   if (SOFT_SKILL_TERMS.has(term)) return "soft";
+  if (INDUSTRY_TERMS.has(term)) return "industry";
   return "domain";
 }
 

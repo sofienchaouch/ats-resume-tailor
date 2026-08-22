@@ -108,6 +108,18 @@ describe("buildKeywordMatches", () => {
     }
   });
 
+  it("classifies business/industry vocabulary as 'industry', not 'domain'", () => {
+    // Deliberately small, isolated JD: the shared `jobDescription` fixture
+    // already fills all 20 top-term slots with higher-frequency technical
+    // terms, which would push single-mention industry terms out entirely.
+    const smallJd = "We are hiring for a SaaS company in the fintech space, GDPR compliance required.";
+    const matches = buildKeywordMatches(smallJd, weakResume, strongResume);
+    const saas = matches.find((m) => m.term === "saas");
+    const fintech = matches.find((m) => m.term === "fintech");
+    expect(saas?.category).toBe("industry");
+    expect(fintech?.category).toBe("industry");
+  });
+
   it("returns no keywords for an empty job description", () => {
     expect(buildKeywordMatches("", weakResume, strongResume)).toEqual([]);
   });
