@@ -1059,10 +1059,26 @@ app.post("/api/tailor", expensiveAiLimiter, requireServerKey, validateBody(schem
     }
 
     const targetLang = language === 'fr' ? 'French' : 'English';
+    const tailorProvider = aiConfig?.provider || 'gemini';
+
+    // Google Search grounding (tools: [{googleSearch}]) is Gemini-only. Every
+    // other provider in this app's routing (OpenAI-compatible, claude-cli) has
+    // no way to fetch a URL -- asking one to anyway doesn't fail cleanly, it
+    // produces a confused plain-text non-answer ("I can't browse URLs...")
+    // which then breaks JSON parsing on the main tailor call below. Skip the
+    // grounding call entirely for non-Gemini providers and fail fast with a
+    // clear message instead of a wasted call followed by a cryptic crash.
+    if (jobUrl && !jobDescription && tailorProvider !== 'gemini') {
+      return res.status(400).json({
+        error: "This AI provider can't fetch job URLs directly. Paste the job description text as well, or switch to Gemini in AI Settings.",
+        code: "PROVIDER_CANNOT_FETCH_URL",
+        statusCode: 400,
+      });
+    }
 
     // If a Job URL is provided, fetch/summarize its details first in a separate non-JSON call using Google Search
     let fetchedJobDetails = "";
-    if (jobUrl) {
+    if (jobUrl && tailorProvider === 'gemini') {
       try {
         console.log(`[Gemini] URL provided (${jobUrl}). Fetching details first via Google Search (without responseMimeType)...`);
         const searchPrompt = `Retrieve and analyze the job posting or details at the following URL: "${jobUrl}". Summarize the job requirements, responsibilities, qualifications, tech stack, and company name clearly so we can use it to tailor a resume.`;
