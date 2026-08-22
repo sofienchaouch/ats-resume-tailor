@@ -4,6 +4,7 @@ import { createServer as createViteServer } from "vite";
 import { GoogleGenAI, Type } from "@google/genai";
 import dotenv from "dotenv";
 import mammoth from "mammoth";
+import { PDFParse } from "pdf-parse";
 import puppeteer from "puppeteer-core";
 import chromium from "@sparticuz/chromium";
 import fs from "fs";
@@ -1466,8 +1467,10 @@ app.post("/api/parse-resume", standardAiLimiter, requireServerKey, validateBody(
     };
 
     let response;
+    const provider = aiConfig?.provider || 'gemini';
 
-    if (fileType === "pdf") {
+    if (fileType === "pdf" && provider === 'gemini') {
+      // Gemini reads the PDF natively via multimodal inlineData.
       response = await generateContentWithRetry({
         model: model || "gemini-3.5-flash",
         contents: [
@@ -1481,6 +1484,36 @@ app.post("/api/parse-resume", standardAiLimiter, requireServerKey, validateBody(
             text: "Parse this PDF resume and map all details into the specified structured JSON format representing a professional CV."
           }
         ],
+        config: {
+          responseMimeType: "application/json",
+          responseSchema: resumeResponseSchema,
+          systemInstruction: "You are an elite, highly precise multi-lingual resume parsing engine. Extract contact info, summary, experience, skills, and education into the required structured JSON format. Ensure experience bullets are parsed as separate elements in the bullets array. Do not invent details; extract only what is written."
+        },
+        aiConfig
+      });
+    } else if (fileType === "pdf") {
+      // Every other provider (OpenAI-compatible, claude-cli) has no multimodal
+      // PDF support in this app's routing — inlineData silently degrades to a
+      // "[Attached Base64 Document]" text placeholder with no actual content,
+      // and the model correctly (if unhelpfully) reports no file was attached.
+      // Extract real text server-side instead, same approach as the DOCX branch.
+      const buffer = Buffer.from(base64Data, 'base64');
+      const parser = new PDFParse({ data: buffer });
+      let extractedText: string;
+      try {
+        const result = await parser.getText();
+        extractedText = result.text;
+      } finally {
+        await parser.destroy();
+      }
+
+      if (!extractedText || extractedText.trim().length === 0) {
+        return res.status(400).json({ error: "Could not extract any readable text from the PDF file." });
+      }
+
+      response = await generateContentWithRetry({
+        model: model || "gemini-3.5-flash",
+        contents: `Parse this plain text resume and map all details into the specified structured JSON format representing a professional CV:\n\n${extractedText}`,
         config: {
           responseMimeType: "application/json",
           responseSchema: resumeResponseSchema,
