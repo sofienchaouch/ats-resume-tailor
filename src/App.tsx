@@ -388,6 +388,24 @@ export default function App() {
     }
   };
 
+  // Safety net for the debounce above: an edit made less than 1.5s before the
+  // tab closes or the user navigates away previously had no chance to ever
+  // reach Firestore -- the timer just never got to fire. Best-effort flush on
+  // both signals (visibilitychange fires reliably on mobile backgrounding,
+  // where beforeunload often doesn't).
+  useEffect(() => {
+    const handleFlush = () => flushPendingResumeSave();
+    const handleVisibility = () => {
+      if (document.visibilityState === 'hidden') handleFlush();
+    };
+    window.addEventListener('beforeunload', handleFlush);
+    document.addEventListener('visibilitychange', handleVisibility);
+    return () => {
+      window.removeEventListener('beforeunload', handleFlush);
+      document.removeEventListener('visibilitychange', handleVisibility);
+    };
+  }, [activeResumeId, user]);
+
   // Switches the active resume version: flushes any pending debounced save
   // for the currently-active version first (so an in-flight edit isn't lost
   // or misattributed to the newly-selected version), then loads the target.
@@ -1973,7 +1991,7 @@ export default function App() {
                         ) : activeResultTab === 'resume' ? (
                           <div className="bg-white border border-slate-200 rounded-2xl p-5 shadow-sm space-y-4">
                             <div className="flex justify-between items-center pb-3 border-b border-slate-100 print:hidden">
-                              <h3 className="text-sm font-bold text-slate-900 flex items-center gap-1.5">
+                              <h3 className="text-sm font-bold text-slate-900 dark:text-white flex items-center gap-1.5">
                                 <FileText className="w-4.5 h-4.5 text-indigo-500" />
                                 Tailored Optimized Resume Preview
                               </h3>
