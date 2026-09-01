@@ -37,6 +37,10 @@
     button:hover { background: #4338ca; }
     button:disabled { background: #cbd5e1; cursor: default; }
     #status { font-size: 10px; color: #94a3b8; margin-top: 8px; text-align: center; }
+    .footer { margin-top: 12px; display: flex; justify-content: space-between; align-items: center; font-size: 10px; color: #94a3b8; }
+    .footer a { color: #4f46e5; text-decoration: none; font-weight: 700; }
+    .footer a:hover { text-decoration: underline; }
+    #target { font-family: ui-monospace, SFMono-Regular, Menlo, monospace; max-width: 150px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
   </style>
 </head>
 <body>
@@ -44,6 +48,10 @@
   <p>Capture this job posting's URL and open it in ATS Resume Tailor, pre-filled and ready to tailor.</p>
   <button id="captureBtn">Tailor My Resume For This Job</button>
   <div id="status"></div>
+  <div class="footer">
+    <span id="target" title="Target app URL"></span>
+    <a id="settingsLink" href="#">Settings</a>
+  </div>
   <script src="popup.js"></script>
 </body>
 </html>

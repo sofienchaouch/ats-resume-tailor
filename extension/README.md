@@ -12,13 +12,10 @@ ready to tailor — no copy-paste.
 
 ## Pointing it at a deployed app
 
-By default the popup opens `http://localhost:3000`. Once the app is deployed,
-either edit `DEFAULT_APP_URL` in `popup.js`, or set it at runtime from the
-extension's own console:
-
-```js
-chrome.storage.local.set({ appUrl: 'https://your-deployed-app.example.com' })
-```
+By default the popup opens `http://localhost:3000`. To change it, click
+**Settings** in the popup footer (or right-click the extension icon →
+Options) and enter your app URL. It's stored in `chrome.storage.local.appUrl`
+and shown in the popup footer.
 
 ## How it works
 

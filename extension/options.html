@@ -1,0 +1,57 @@
+<!DOCTYPE html>
+<html>
+<head>
+  <meta charset="UTF-8" />
+  <title>ATS Resume Tailor — Options</title>
+  <style>
+    body {
+      max-width: 420px;
+      margin: 40px auto;
+      padding: 0 20px;
+      font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+      color: #0f172a;
+      background: #ffffff;
+    }
+    h1 { font-size: 16px; font-weight: 800; margin: 0 0 4px; }
+    p { font-size: 12px; color: #64748b; line-height: 1.5; margin: 0 0 16px; }
+    label { display: block; font-size: 11px; font-weight: 700; margin-bottom: 6px; text-transform: uppercase; letter-spacing: 0.04em; }
+    input {
+      width: 100%;
+      box-sizing: border-box;
+      border: 1px solid #cbd5e1;
+      border-radius: 8px;
+      padding: 9px 11px;
+      font-size: 13px;
+      font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+    }
+    input:focus { outline: 2px solid #4f46e5; outline-offset: 1px; }
+    button {
+      margin-top: 14px;
+      background: #4f46e5;
+      color: white;
+      border: none;
+      border-radius: 8px;
+      padding: 9px 16px;
+      font-size: 12px;
+      font-weight: 700;
+      cursor: pointer;
+    }
+    button:hover { background: #4338ca; }
+    #status { font-size: 11px; color: #16a34a; margin-top: 10px; min-height: 14px; }
+    .hint { font-size: 10.5px; color: #94a3b8; margin-top: 6px; }
+  </style>
+</head>
+<body>
+  <h1>ATS Resume Tailor — Options</h1>
+  <p>Set the URL where your ATS Resume Tailor app is running. The extension opens captured job postings there.</p>
+
+  <label for="appUrl">App URL</label>
+  <input id="appUrl" type="url" placeholder="http://localhost:3000" />
+  <div class="hint">e.g. <code>http://localhost:3000</code> for local dev, or your deployed URL.</div>
+
+  <button id="saveBtn" type="button">Save</button>
+  <div id="status"></div>
+
+  <script src="options.js"></script>
+</body>
+</html>

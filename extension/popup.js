@@ -4,6 +4,18 @@ const DEFAULT_APP_URL = 'http://localhost:3000';
 
 const btn = document.getElementById('captureBtn');
 const status = document.getElementById('status');
+const targetEl = document.getElementById('target');
+const settingsLink = document.getElementById('settingsLink');
+
+// Show which app URL captures will open in, and offer a shortcut to change it.
+chrome.storage.local.get('appUrl').then((stored) => {
+  targetEl.textContent = (stored.appUrl || DEFAULT_APP_URL).replace(/^https?:\/\//, '');
+});
+
+settingsLink.addEventListener('click', (e) => {
+  e.preventDefault();
+  chrome.runtime.openOptionsPage();
+});
 
 btn.addEventListener('click', async () => {
   btn.disabled = true;
