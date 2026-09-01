@@ -39,6 +39,8 @@ interface ApplicationIntegrationsHubProps {
   coverLetter: CoverLetterData | null;
   atsScore: number;
   onEmailSent?: (threadId: string, email: string) => void;
+  /** Merge loose skill strings into the master resume. Returns count actually added. */
+  onAddSkills?: (skills: string[]) => number;
   targetCompany?: string;
   targetTitle?: string;
 }
@@ -48,6 +50,7 @@ export default function ApplicationIntegrationsHub({
   coverLetter,
   atsScore,
   onEmailSent,
+  onAddSkills,
   targetCompany,
   targetTitle
 }: ApplicationIntegrationsHubProps) {
@@ -68,6 +71,9 @@ export default function ApplicationIntegrationsHub({
       } else {
         try {
           const { localDb } = await import('../utils/localDb');
+          // Absorb any legacy raw-localStorage copy an older build wrote so the
+          // Hub and the Kanban Tracker read from one place (localDb) only.
+          await localDb.migrateFromLocalStorage(['ats_tailor_job_applications']);
           const apps = await localDb.getItem<any[]>('ats_tailor_job_applications', []);
           if (apps) setTrackerApps(apps);
         } catch (e) {
@@ -77,6 +83,19 @@ export default function ApplicationIntegrationsHub({
     };
     loadApps();
   }, [user]);
+
+  // Single persistence path for job-application data: Firestore when signed in,
+  // localDb (IndexedDB w/ localStorage fallback) for guests. Matches
+  // ApplicationTracker.tsx so the two views never diverge.
+  const persistTrackerApps = async (apps: any[]) => {
+    setTrackerApps(apps);
+    if (user) {
+      await saveJobApplications(user.uid, apps);
+    } else {
+      const { localDb } = await import('../utils/localDb');
+      await localDb.setItem('ats_tailor_job_applications', apps);
+    }
+  };
 
   const logOutreachToTracker = async (platform: 'Email' | 'LinkedIn') => {
     const today = new Date().toISOString().split('T')[0];
@@ -109,13 +128,7 @@ export default function ApplicationIntegrationsHub({
       updatedApps = [newApp, ...updatedApps];
     }
     
-    setTrackerApps(updatedApps);
-    if (user) {
-      await saveJobApplications(user.uid, updatedApps);
-    } else {
-      const { localDb } = await import('../utils/localDb');
-      await localDb.setItem('ats_tailor_job_applications', updatedApps);
-    }
+    await persistTrackerApps(updatedApps);
   };
 
   const [linkedinActiveSubTab, setLinkedinActiveSubTab] = useState<'feed' | 'about' | 'experience'>('feed');
@@ -178,9 +191,6 @@ export default function ApplicationIntegrationsHub({
   const [linkedinExperienceText, setLinkedinExperienceText] = useState('');
   const [customLinkedinClientId, setCustomLinkedinClientId] = useState(() => {
     return localStorage.getItem('ats_custom_linkedin_client_id') || '';
-  });
-  const [customLinkedinClientSecret, setCustomLinkedinClientSecret] = useState(() => {
-    return localStorage.getItem('ats_custom_linkedin_client_secret') || '';
   });
   const [linkedinScopeStatus, setLinkedinScopeStatus] = useState<'idle' | 'testing' | 'active'>(() => {
     const saved = localStorage.getItem('ats_linkedin_status');
@@ -290,10 +300,17 @@ export default function ApplicationIntegrationsHub({
     }
   };
 
-  const handleAddToMasterResume = async () => {
-    // This would require a way to update the master resume
-    // Assuming for now it just updates local state and alerts the user
-    showSuccess(`Added skills to master resume: ${missingSkills.join(', ')}`);
+  const handleAddToMasterResume = () => {
+    if (!onAddSkills) {
+      showToast('Open the Resume Editor to add these skills to your master resume.', 'warning');
+      return;
+    }
+    const added = onAddSkills(missingSkills);
+    if (added > 0) {
+      showSuccess(`Added ${added} skill${added === 1 ? '' : 's'} to your master resume (see Resume Editor)`);
+    } else {
+      showToast('Those skills are already in your master resume', 'info');
+    }
     setMissingSkills([]);
   };
 
@@ -324,36 +341,6 @@ export default function ApplicationIntegrationsHub({
   
   // Tab control state
   const [activeHubTab, setActiveHubTab] = useState<'email' | 'linkedin' | 'networking' | 'parser'>('email');
-
-  // Load and sync job applications from tracker
-  const { user: authUser } = useAuth();
-  const [jobApplications, setJobApplications] = useState<any[]>([]);
-
-  useEffect(() => {
-    if (authUser) {
-      getJobApplications(authUser.uid).then(saved => {
-        if (saved) setJobApplications(saved);
-      }).catch(err => console.error('Failed to parse saved applications:', err));
-    } else {
-      const saved = localStorage.getItem('ats_tailor_job_applications');
-      if (saved) {
-        try {
-          setJobApplications(JSON.parse(saved));
-        } catch (err) {
-          console.error('Failed to parse saved applications:', err);
-        }
-      }
-    }
-  }, [authUser]);
-
-  const saveApps = (apps: any[]) => {
-    setJobApplications(apps);
-    if (authUser) {
-      saveJobApplications(authUser.uid, apps);
-    } else {
-      localStorage.setItem('ats_tailor_job_applications', JSON.stringify(apps));
-    }
-  };
 
   // Scan Gmail messages for interview keyword
   const handleScanGmailForInterviews = async () => {
@@ -535,7 +522,7 @@ export default function ApplicationIntegrationsHub({
       setCalendarSuccess(eventData);
 
       // Now, update/log in Application Tracker
-      const updatedApps = [...jobApplications];
+      const updatedApps = [...trackerApps];
       const today = new Date().toISOString().split('T')[0];
 
       if (selectedMatchedAppId === 'new') {
@@ -549,7 +536,7 @@ export default function ApplicationIntegrationsHub({
           dateUpdated: today,
           notes: `[System Sync]: Interview automatically scheduled on Google Calendar!\n\nInterview Date: ${formDate} @ ${formTime}\nType: ${formType}\nLink: ${formLink || 'None'}\n\nNotes:\n${formNotes}`
         };
-        saveApps([newApp, ...updatedApps]);
+        await persistTrackerApps([newApp, ...updatedApps]);
       } else {
         const index = updatedApps.findIndex(app => app.id === selectedMatchedAppId);
         if (index !== -1) {
@@ -559,7 +546,7 @@ export default function ApplicationIntegrationsHub({
             dateUpdated: today,
             notes: (updatedApps[index].notes || '') + `\n\n[System Sync]: Interview scheduled on Google Calendar!\nDate: ${formDate} @ ${formTime}\nType: ${formType}\nLink: ${formLink || 'None'}\n\nNotes:\n${formNotes}`
           };
-          saveApps(updatedApps);
+          await persistTrackerApps(updatedApps);
         }
       }
 
@@ -624,20 +611,27 @@ export default function ApplicationIntegrationsHub({
     }
   };
 
+  // NOT a lookup: builds the common role-address patterns for the TARGET
+  // company's domain so the user has a starting point. These are unverified
+  // guesses — the UI labels them as such and the user must confirm a real
+  // address before sending.
   const handleSearchRecruiter = () => {
+    const company = (targetCompany || '').trim();
+    if (!company) {
+      showToast('Set the target company first (Target Specifications) to generate address patterns.', 'warning');
+      return;
+    }
     setIsSearchingRecruiter(true);
-    setTimeout(() => {
-      const company = tailoredResume?.experience?.[0]?.company || 'TargetCompany';
-      const cleanCompany = company.toLowerCase().replace(/[^a-z0-9]/g, '');
-      const domains = [
-        `careers@${cleanCompany}.com`,
-        `talent.acquisition@${cleanCompany}.com`,
-        `recruiting@${cleanCompany}.com`,
-        `hr.hiring@${cleanCompany}.com`
-      ];
-      setFoundRecruiters(domains);
-      setIsSearchingRecruiter(false);
-    }, 1100);
+    const cleanCompany = company.toLowerCase().replace(/[^a-z0-9]/g, '');
+    const patterns = [
+      `careers@${cleanCompany}.com`,
+      `recruiting@${cleanCompany}.com`,
+      `talent@${cleanCompany}.com`,
+      `jobs@${cleanCompany}.com`,
+      `hr@${cleanCompany}.com`
+    ];
+    setFoundRecruiters(patterns);
+    setIsSearchingRecruiter(false);
   };
 
   // Load Cover Letter into email body on mount/update
@@ -831,12 +825,11 @@ export default function ApplicationIntegrationsHub({
     setLinkedinScopeStatus('testing');
     
     try {
+      // Only the public client_id is sent from the browser. The client secret
+      // lives solely in the server environment (LINKEDIN_CLIENT_SECRET).
       const params = new URLSearchParams();
       if (customLinkedinClientId.trim()) {
         params.append('client_id', customLinkedinClientId.trim());
-      }
-      if (customLinkedinClientSecret.trim()) {
-        params.append('client_secret', customLinkedinClientSecret.trim());
       }
 
       const { url } = await apiFetch<{ url: string }>(`/api/auth/linkedin/url?${params.toString()}`);
@@ -904,7 +897,7 @@ export default function ApplicationIntegrationsHub({
     <div className="space-y-6 animate-fade-in" id="integrations-hub">
       {/* Interactive Outreach Suite Navigation Tabs */}
       <div className="flex border-b border-slate-200 dark:border-slate-800/80 mb-2 relative overflow-x-auto scrollbar-none" id="integrations-tab-header">
-        <div className="flex gap-2 p-1 w-full min-w-max">
+        <div className="flex gap-2 p-1 w-full min-w-max" role="tablist" aria-label="Outreach suite sections">
           {[
             { id: 'email', label: 'Email Outreach', icon: Mail },
             { id: 'linkedin', label: 'LinkedIn Connector', icon: Linkedin },
@@ -931,6 +924,8 @@ export default function ApplicationIntegrationsHub({
                     : 'text-slate-600 dark:text-slate-400 hover:text-slate-900 dark:hover:text-slate-200 hover:bg-slate-50 dark:hover:bg-slate-800/50'
                 }`}
                 type="button"
+                role="tab"
+                aria-selected={isActive}
               >
                 <Icon className="w-4 h-4" />
                 {tab.label}
@@ -1110,23 +1105,16 @@ export default function ApplicationIntegrationsHub({
                         type="button"
                         className="text-[10px] text-indigo-600 hover:text-indigo-800 dark:text-indigo-400 font-bold flex items-center gap-1 cursor-pointer transition-colors"
                       >
-                        {isSearchingRecruiter ? (
-                          <>
-                            <Loader2 className="w-3 h-3 animate-spin" />
-                            Scanning for Recruiters...
-                          </>
-                        ) : (
-                          <>
-                            <Sparkles className="w-3 h-3 text-indigo-500 animate-pulse" />
-                            Direct Recruiter Finder
-                          </>
-                        )}
+                        <Sparkles className="w-3 h-3 text-indigo-500" />
+                        Suggest address patterns
                       </button>
                     </div>
 
                     {foundRecruiters.length > 0 && (
-                      <div className="bg-indigo-50/50 border border-indigo-100 p-2.5 rounded-xl space-y-1 text-[11px] animate-fade-in">
-                        <span className="font-bold text-indigo-800">Recruiting Inboxes Extrapolated:</span>
+                      <div className="bg-amber-50/70 dark:bg-amber-950/30 border border-amber-200 dark:border-amber-900/50 p-2.5 rounded-xl space-y-1 text-[11px] animate-fade-in">
+                        <span className="font-bold text-amber-800 dark:text-amber-300">
+                          Common address patterns for {targetCompany} — unverified guesses
+                        </span>
                         <div className="flex flex-wrap gap-1.5">
                           {foundRecruiters.map((email, idx) => (
                             <button
@@ -1136,13 +1124,16 @@ export default function ApplicationIntegrationsHub({
                                 setRecipientEmail(email);
                                 setFoundRecruiters([]);
                               }}
-                              className="bg-white hover:bg-indigo-100 border border-indigo-200 text-indigo-700 px-2 py-0.5 rounded-lg font-mono font-bold text-[10px] transition-colors cursor-pointer"
+                              className="bg-white dark:bg-slate-800 hover:bg-amber-100 dark:hover:bg-slate-700 border border-amber-200 dark:border-amber-900/50 text-amber-800 dark:text-amber-200 px-2 py-0.5 rounded-lg font-mono font-bold text-[10px] transition-colors cursor-pointer"
                             >
                               {email}
                             </button>
                           ))}
                         </div>
-                        <p className="text-[9px] text-slate-400">Click any address to auto-fill recipient email field.</p>
+                        <p className="text-[9px] text-amber-700/80 dark:text-amber-400/80">
+                          These are guesses from the company name, not looked-up addresses. Confirm a real address
+                          (job posting, company careers page, LinkedIn) before sending.
+                        </p>
                       </div>
                     )}
 
@@ -1491,7 +1482,7 @@ export default function ApplicationIntegrationsHub({
                           className="w-full bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-800 rounded-xl p-2.5 text-xs font-bold text-slate-850 dark:text-white cursor-pointer"
                         >
                           <option value="new">Create & Pre-populate Brand New Kanban Board Entry</option>
-                          {jobApplications.map((app) => (
+                          {trackerApps.map((app) => (
                             <option key={app.id} value={app.id}>
                               Match with: {app.company} — {app.title} ({app.status.toUpperCase()})
                             </option>
@@ -1679,55 +1670,36 @@ export default function ApplicationIntegrationsHub({
                 </ol>
 
                 <div className="space-y-2.5 border-t border-slate-200 dark:border-slate-800 pt-3">
-                  <div className="text-[10px] font-extrabold text-slate-700 dark:text-slate-300 uppercase tracking-wider">Configure Credentials Directly:</div>
-                  <div className="grid grid-cols-1 gap-2.5">
-                    <div className="space-y-1">
-                      <label className="text-[10px] font-semibold text-slate-600 dark:text-slate-400">LinkedIn Client ID</label>
-                      <input
-                        type="text"
-                        value={customLinkedinClientId}
-                        onChange={(e) => {
-                          const val = e.target.value;
-                          setCustomLinkedinClientId(val);
-                          localStorage.setItem('ats_custom_linkedin_client_id', val);
-                        }}
-                        placeholder="Enter Client ID (or leave blank for Sandbox)"
-                        className="w-full bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-700 rounded-lg p-2 text-xs focus:ring-1 focus:ring-indigo-500 outline-none font-mono"
-                      />
-                    </div>
-                    <div className="space-y-1">
-                      <label className="text-[10px] font-semibold text-slate-600 dark:text-slate-400">LinkedIn Client Secret</label>
-                      <input
-                        type="password"
-                        value={customLinkedinClientSecret}
-                        onChange={(e) => {
-                          const val = e.target.value;
-                          setCustomLinkedinClientSecret(val);
-                          localStorage.setItem('ats_custom_linkedin_client_secret', val);
-                        }}
-                        placeholder="Enter Client Secret"
-                        className="w-full bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-700 rounded-lg p-2 text-xs focus:ring-1 focus:ring-indigo-500 outline-none font-mono"
-                      />
-                    </div>
+                  <div className="text-[10px] font-extrabold text-slate-700 dark:text-slate-300 uppercase tracking-wider">LinkedIn Client ID (public):</div>
+                  <div className="space-y-1">
+                    <input
+                      type="text"
+                      value={customLinkedinClientId}
+                      onChange={(e) => {
+                        const val = e.target.value;
+                        setCustomLinkedinClientId(val);
+                        localStorage.setItem('ats_custom_linkedin_client_id', val);
+                      }}
+                      placeholder="Enter Client ID (or leave blank for Sandbox)"
+                      className="w-full bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-700 rounded-lg p-2 text-xs focus:ring-1 focus:ring-indigo-500 outline-none font-mono"
+                    />
                   </div>
-                  {(customLinkedinClientId.trim() || customLinkedinClientSecret.trim()) && (
+                  {customLinkedinClientId.trim() && (
                     <button
                       onClick={() => {
                         setCustomLinkedinClientId('');
-                        setCustomLinkedinClientSecret('');
                         localStorage.removeItem('ats_custom_linkedin_client_id');
-                        localStorage.removeItem('ats_custom_linkedin_client_secret');
                       }}
                       className="text-[10px] text-red-650 hover:underline font-semibold block mt-1"
                     >
-                      Clear custom credentials & restore default
+                      Clear Client ID & restore default
                     </button>
                   )}
+                  <p className="text-[10px] text-slate-500 dark:text-slate-400 leading-relaxed">
+                    The <b>Client Secret</b> is never entered here — set <code className="font-mono">LINKEDIN_CLIENT_SECRET</code>{' '}
+                    as a server environment variable. Without it, the suite falls back to the interactive sandbox simulation.
+                  </p>
                 </div>
-
-                <p className="text-[10px] text-indigo-650 dark:text-indigo-400 font-semibold italic bg-indigo-50/50 dark:bg-indigo-950/20 p-2 rounded-lg">
-                  💡 Note: If these keys are absent, the suite automatically falls back to an interactive sandbox simulation featuring customized mock profile datasets!
-                </p>
               </div>
             )}
 
