@@ -59,8 +59,19 @@ const STAGES = [
 export default function ApplicationTracker() {
   const { showError, showSuccess, showToast } = useToast();
   const [applications, setApplications] = useState<JobApplication[]>([]);
+  const [appsLoaded, setAppsLoaded] = useState(false);
   const [showAddForm, setShowAddForm] = useState(false);
   const [editingAppId, setEditingAppId] = useState<string | null>(null);
+
+  // Close the add/edit modal on Escape.
+  useEffect(() => {
+    if (!showAddForm) return;
+    const onKey = (e: KeyboardEvent) => {
+      if (e.key === 'Escape') setShowAddForm(false);
+    };
+    window.addEventListener('keydown', onKey);
+    return () => window.removeEventListener('keydown', onKey);
+  }, [showAddForm]);
 
   // Form State
   const [company, setCompany] = useState('');
@@ -85,13 +96,16 @@ export default function ApplicationTracker() {
         setApplications(saved);
       } catch (err) {
         console.error('Failed to load job applications from IndexedDB:', err);
+      } finally {
+        setAppsLoaded(true);
       }
     };
 
     if (user) {
       getJobApplications(user.uid).then(saved => {
         if (saved) setApplications(saved);
-      }).catch(err => console.error('Failed to parse saved applications:', err));
+      }).catch(err => console.error('Failed to parse saved applications:', err))
+        .finally(() => setAppsLoaded(true));
 
       listResumeVersions(user.uid).then(versions => {
         setResumeVersionNames(Object.fromEntries(versions.map(v => [v.id, v.name])));
@@ -387,6 +401,31 @@ export default function ApplicationTracker() {
         </button>
       </div>
 
+      {!appsLoaded ? (
+        <div className="grid grid-cols-1 lg:grid-cols-5 gap-4 pb-4" aria-busy="true" aria-label="Loading applications">
+          {STAGES.map(stage => (
+            <div key={stage.id} className="bg-slate-50 dark:bg-slate-900/40 border border-slate-150 dark:border-slate-800 rounded-2xl p-3 space-y-2">
+              <div className="h-4 w-20 bg-slate-200 dark:bg-slate-800 rounded animate-pulse" />
+              <div className="h-16 bg-slate-100 dark:bg-slate-800/60 rounded-lg animate-pulse" />
+              <div className="h-16 bg-slate-100 dark:bg-slate-800/60 rounded-lg animate-pulse" />
+            </div>
+          ))}
+        </div>
+      ) : applications.length === 0 ? (
+        <div className="text-center py-16 px-4 bg-white dark:bg-slate-900 border border-dashed border-slate-200 dark:border-slate-800 rounded-2xl">
+          <Building className="w-10 h-10 text-slate-300 dark:text-slate-700 mx-auto mb-3" />
+          <h3 className="text-sm font-extrabold text-slate-900 dark:text-white">No applications tracked yet</h3>
+          <p className="text-xs text-slate-500 dark:text-slate-400 mt-1 max-w-sm mx-auto">
+            Add one manually, or tailor a resume and use "Sync to Tracker" from the ATS view.
+          </p>
+          <button
+            onClick={handleOpenAddForm}
+            className="mt-4 bg-indigo-600 hover:bg-indigo-700 text-white font-bold text-xs py-2 px-4 rounded-xl inline-flex items-center gap-1 transition-all cursor-pointer"
+          >
+            <Plus className="w-4 h-4" /> Add your first application
+          </button>
+        </div>
+      ) : (
       <div className="grid grid-cols-1 lg:grid-cols-5 gap-4 overflow-x-auto pb-4" id="kanban-columns-container">
         {STAGES.map(stage => {
           const stageApps = applications.filter(app => app.status === stage.id);
@@ -518,25 +557,35 @@ export default function ApplicationTracker() {
           );
         })}
       </div>
+      )}
 
       {/* 3. ADD / EDIT APPLICATION MODAL POPUP */}
       <AnimatePresence>
         {showAddForm && (
-          <div className="fixed inset-0 bg-slate-900/60 backdrop-blur-xs flex items-center justify-center p-4 z-50 animate-fade-in" id="tracker-form-modal">
+          <div
+            className="fixed inset-0 bg-slate-900/60 backdrop-blur-xs flex items-center justify-center p-4 z-50 animate-fade-in"
+            id="tracker-form-modal"
+            onClick={() => setShowAddForm(false)}
+          >
             <motion.div
               initial={{ scale: 0.95, y: 15 }}
               animate={{ scale: 1, y: 0 }}
               exit={{ scale: 0.95, y: 15 }}
               className="bg-white dark:bg-slate-900 border border-slate-150 dark:border-slate-800 rounded-2xl w-full max-w-xl shadow-2xl overflow-hidden flex flex-col max-h-[90vh]"
+              role="dialog"
+              aria-modal="true"
+              aria-labelledby="tracker-form-title"
+              onClick={(e) => e.stopPropagation()}
             >
               <div className="bg-slate-50 dark:bg-slate-850 p-4 border-b border-slate-150 dark:border-slate-800 flex justify-between items-center flex-shrink-0">
-                <h3 className="text-sm font-extrabold text-slate-900 dark:text-white flex items-center gap-1.5">
+                <h3 id="tracker-form-title" className="text-sm font-extrabold text-slate-900 dark:text-white flex items-center gap-1.5">
                   <Briefcase className="w-4.5 h-4.5 text-indigo-500" />
                   {editingAppId ? 'Update Tracked Application' : 'Track New Application'}
                 </h3>
                 <button
                   type="button"
                   onClick={() => setShowAddForm(false)}
+                  aria-label="Close"
                   className="text-slate-400 hover:text-slate-600 dark:hover:text-slate-300 font-bold text-sm cursor-pointer"
                 >
                   ✕
@@ -544,7 +593,7 @@ export default function ApplicationTracker() {
               </div>
 
               <form onSubmit={handleSaveApplication} className="p-5 space-y-4 overflow-y-auto flex-grow text-xs leading-relaxed">
-                <div className="grid grid-cols-2 gap-4">
+                <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
                   <div className="space-y-1">
                     <label className="font-bold text-slate-700 dark:text-slate-300">Company Name *</label>
                     <input
@@ -569,7 +618,7 @@ export default function ApplicationTracker() {
                   </div>
                 </div>
 
-                <div className="grid grid-cols-3 gap-4">
+                <div className="grid grid-cols-1 sm:grid-cols-3 gap-4">
                   <div className="space-y-1 col-span-2">
                     <label className="font-bold text-slate-700 dark:text-slate-300">Location</label>
                     <input
@@ -592,7 +641,7 @@ export default function ApplicationTracker() {
                   </div>
                 </div>
 
-                <div className="grid grid-cols-2 gap-4">
+                <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
                   <div className="space-y-1">
                     <label className="font-bold text-slate-700 dark:text-slate-300">Posting URL</label>
                     <input
@@ -619,7 +668,7 @@ export default function ApplicationTracker() {
 
                 <div className="bg-slate-50 dark:bg-slate-850 p-3 rounded-xl border border-slate-150 dark:border-slate-800 space-y-3">
                   <span className="font-bold text-indigo-800 dark:text-indigo-400 block tracking-wide uppercase text-[9px]">Direct Contact Information</span>
-                  <div className="grid grid-cols-2 gap-4 text-xs">
+                  <div className="grid grid-cols-1 sm:grid-cols-2 gap-4 text-xs">
                     <div className="space-y-1">
                       <label className="font-semibold text-slate-600 dark:text-slate-400">Recruiter Name</label>
                       <input

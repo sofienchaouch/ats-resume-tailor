@@ -124,6 +124,22 @@ export default function AtsDashboard({
     { subject: 'Industry Terms', 'Target Job (Required)': 4, 'Your Master CV': 1, 'Tailored Output': 4 },
   ];
 
+  // A shared, floored radius so the polygon keeps a readable footprint. With
+  // recharts' 'dataMax + 1' a job description that surfaced only a couple of
+  // keywords rescaled the whole chart until the shape collapsed into a sliver.
+  const radarValues = finalRadarData.flatMap((d) => [
+    d['Target Job (Required)'],
+    d['Your Master CV'],
+    d['Tailored Output'],
+  ]);
+  const radarAxisMax = Math.max(4, ...radarValues) + 1;
+
+  // Categories the job description simply never mentioned. Worth calling out --
+  // otherwise a legitimately flat axis reads as a broken chart.
+  const emptyCategories = finalRadarData
+    .filter((d) => d['Target Job (Required)'] === 0)
+    .map((d) => d.subject);
+
   const finalBarData = hasKeywords ? barData : [
     { term: 'TypeScript', 'Required Frequency': 4, 'Your Master CV Matches': 1, 'Tailored Output Matches': 4 },
     { term: 'React', 'Required Frequency': 5, 'Your Master CV Matches': 2, 'Tailored Output Matches': 5 },
@@ -353,50 +369,77 @@ export default function AtsDashboard({
 
         {/* Visual Charts Container */}
         <div className="grid grid-cols-1 lg:grid-cols-12 gap-8 items-center animate-fade-in" id="chart-content-grid">
-          <div className="lg:col-span-7 h-[320px] w-full flex items-center justify-center relative" id="recharts-chart-wrapper">
+          <div className="lg:col-span-7 h-[380px] w-full flex items-center justify-center relative" id="recharts-chart-wrapper">
             {chartViewMode === 'radar' ? (
+              <>
               <ResponsiveContainer width="100%" height="100%">
-                <RadarChart cx="50%" cy="50%" outerRadius="80%" data={finalRadarData}>
+                <RadarChart
+                  cx="50%"
+                  cy="46%"
+                  outerRadius="68%"
+                  data={finalRadarData}
+                  // Without room reserved on every side, the longest axis labels
+                  // ("Domain Knowledge", "Industry Terms") ran off the plot box
+                  // and collided with the legend underneath it.
+                  margin={{ top: 16, right: 56, bottom: 24, left: 56 }}
+                >
                   <PolarGrid stroke={gridColor} />
-                  <PolarAngleAxis 
-                    dataKey="subject" 
-                    tick={{ fill: textColor, fontSize: 10, fontWeight: 600 }} 
+                  <PolarAngleAxis
+                    dataKey="subject"
+                    tick={{ fill: textColor, fontSize: 10, fontWeight: 600 }}
                   />
-                  <PolarRadiusAxis 
-                    angle={30} 
-                    domain={[0, 'dataMax + 1']} 
-                    tick={{ fill: textColor, fontSize: 8 }} 
+                  {/* Axis ticks are deliberately hidden: drawn at 30 degrees they
+                      cut straight across the polygons and read as stray marks.
+                      The tooltip already gives exact per-category counts. */}
+                  <PolarRadiusAxis
+                    angle={90}
+                    domain={[0, radarAxisMax]}
+                    tick={false}
+                    axisLine={false}
                   />
                   <Radar
                     name="Target Job (Required)"
                     dataKey="Target Job (Required)"
                     stroke="#6366f1"
                     fill="#6366f1"
-                    fillOpacity={0.15}
+                    fillOpacity={0.1}
+                    strokeWidth={2}
                   />
                   <Radar
                     name="Your Master CV"
                     dataKey="Your Master CV"
                     stroke="#f43f5e"
                     fill="#f43f5e"
-                    fillOpacity={0.15}
+                    fillOpacity={0.1}
+                    strokeWidth={2}
+                    // Dashed so it stays readable where it sits exactly on top of
+                    // the tailored polygon (a very common outcome).
+                    strokeDasharray="4 3"
                   />
                   <Radar
                     name="Tailored Output"
                     dataKey="Tailored Output"
                     stroke="#10b981"
                     fill="#10b981"
-                    fillOpacity={0.2}
+                    fillOpacity={0.25}
+                    strokeWidth={2}
                   />
                   <Tooltip content={<CustomTooltip />} />
-                  <Legend 
-                    verticalAlign="bottom" 
-                    height={36} 
+                  <Legend
+                    verticalAlign="bottom"
+                    height={28}
                     iconSize={8}
-                    wrapperStyle={{ fontSize: '10px', fontWeight: 'bold' }} 
+                    wrapperStyle={{ fontSize: '10px', fontWeight: 'bold', paddingTop: '4px' }}
                   />
                 </RadarChart>
               </ResponsiveContainer>
+              {emptyCategories.length > 0 && (
+                <p className="absolute bottom-0 left-0 right-0 text-center text-[10px] text-slate-500 dark:text-slate-400 px-4">
+                  No {emptyCategories.join(' or ')} keywords were found in this job description, so
+                  {emptyCategories.length > 1 ? ' those axes sit' : ' that axis sits'} at zero.
+                </p>
+              )}
+              </>
             ) : (
               <ResponsiveContainer width="100%" height="100%">
                 <BarChart 
