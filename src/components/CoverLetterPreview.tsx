@@ -22,6 +22,7 @@ import {
 import { CoverLetterData, KeywordMatch, AiConfig } from '../types';
 import { useToast } from './Toast';
 import { apiFetch, apiFetchBlob } from '../utils/apiClient';
+import { coverLetterToMarkdown, downloadMarkdown, toMarkdownFileName } from '../utils/obsidianSync';
 
 function InlineTextarea({
   value,
@@ -217,6 +218,12 @@ export default function CoverLetterPreview({
       console.error('Failed to copy', err);
       setCopyStatus('Failed to copy');
     }
+  };
+
+  const handleExportMarkdown = () => {
+    const md = coverLetterToMarkdown(coverLetter);
+    const stem = `${coverLetter.recipientCompany || coverLetter.senderName || 'cover letter'} cover letter`;
+    downloadMarkdown(toMarkdownFileName(stem), md);
   };
 
   const handleDownloadTxt = () => {
@@ -657,7 +664,7 @@ export default function CoverLetterPreview({
 
             <button
               onClick={handleDownloadTxt}
-              className="text-xs font-bold text-slate-700 hover:text-slate-900 dark:text-white bg-white border border-slate-200 px-3 py-1.5 rounded-lg flex items-center gap-1.5 transition-all cursor-pointer hover:bg-slate-50 shadow-2xs"
+              className="text-xs font-bold text-slate-700 hover:text-slate-900 dark:text-white dark:hover:text-white bg-white dark:bg-slate-800 border border-slate-200 dark:border-slate-700 px-3 py-1.5 rounded-lg flex items-center gap-1.5 transition-all cursor-pointer hover:bg-slate-50 dark:hover:bg-slate-700 shadow-2xs"
               id="btn-cl-download-txt"
               title="Download Cover Letter as Plain Text .txt file"
             >
@@ -666,8 +673,18 @@ export default function CoverLetterPreview({
             </button>
 
             <button
+              onClick={handleExportMarkdown}
+              className="text-xs font-bold text-slate-700 hover:text-slate-900 dark:text-white dark:hover:text-white bg-white dark:bg-slate-800 border border-slate-200 dark:border-slate-700 px-3 py-1.5 rounded-lg flex items-center gap-1.5 transition-all cursor-pointer hover:bg-slate-50 dark:hover:bg-slate-700 shadow-2xs"
+              id="btn-cl-download-markdown"
+              title="Download as Markdown (drop into an Obsidian vault)"
+            >
+              <FileDown className="w-4 h-4 text-violet-500" />
+              Markdown
+            </button>
+
+            <button
               onClick={handleExportDoc}
-              className="text-xs font-bold text-slate-700 hover:text-slate-900 dark:text-white bg-white border border-slate-200 px-3 py-1.5 rounded-lg flex items-center gap-1.5 transition-all cursor-pointer hover:bg-slate-50 shadow-2xs"
+              className="text-xs font-bold text-slate-700 hover:text-slate-900 dark:text-white dark:hover:text-white bg-white dark:bg-slate-800 border border-slate-200 dark:border-slate-700 px-3 py-1.5 rounded-lg flex items-center gap-1.5 transition-all cursor-pointer hover:bg-slate-50 dark:hover:bg-slate-700 shadow-2xs"
               id="btn-cl-download-docx"
               title="Download Cover Letter as Word .docx document"
             >

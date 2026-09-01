@@ -6,13 +6,31 @@ export interface ObsidianSyncMetadata {
   atsScore?: number;
 }
 
-export interface ObsidianSyncResult {
-  success: boolean;
-  filePath?: string;
-  fileName?: string;
-  folder?: string;
-  vaultPath?: string;
-  error?: string;
+/** Slugify a string into a safe Markdown filename stem. */
+export function toMarkdownFileName(stem: string): string {
+  const clean = stem
+    .trim()
+    .replace(/[^a-z0-9\s-]/gi, '')
+    .replace(/\s+/g, '-')
+    .replace(/-+/g, '-')
+    .toLowerCase();
+  return `${clean || 'note'}.md`;
+}
+
+/**
+ * Trigger a client-side download of Markdown text. Drop the file into any
+ * Obsidian vault folder (or anywhere else) — no server, no vault path config.
+ */
+export function downloadMarkdown(fileName: string, content: string): void {
+  const blob = new Blob([content], { type: 'text/markdown;charset=utf-8' });
+  const url = URL.createObjectURL(blob);
+  const a = document.createElement('a');
+  a.href = url;
+  a.download = fileName.endsWith('.md') ? fileName : `${fileName}.md`;
+  document.body.appendChild(a);
+  a.click();
+  document.body.removeChild(a);
+  URL.revokeObjectURL(url);
 }
 
 /**
@@ -160,36 +178,3 @@ export function interviewPrepToMarkdown(questions: any[], company?: string): str
   return lines.join('\n');
 }
 
-/**
- * Sync note content directly to local Obsidian Vault
- */
-export async function syncToObsidianVault(params: {
-  vaultPath?: string;
-  noteType: 'resume' | 'cover-letter' | 'interview-prep' | 'job-tracker';
-  fileName: string;
-  content: string;
-  metadata?: ObsidianSyncMetadata;
-}): Promise<ObsidianSyncResult> {
-  try {
-    const response = await fetch('/api/obsidian/sync', {
-      method: 'POST',
-      headers: {
-        'Content-Type': 'application/json',
-      },
-      body: JSON.stringify(params),
-    });
-
-    if (!response.ok) {
-      const err = await response.json();
-      throw new Error(err.error || 'Obsidian sync failed');
-    }
-
-    return await response.json();
-  } catch (error: any) {
-    console.error('syncToObsidianVault error:', error);
-    return {
-      success: false,
-      error: error.message || 'Failed to sync with Obsidian vault',
-    };
-  }
-}
