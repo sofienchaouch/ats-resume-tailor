@@ -56,7 +56,19 @@ const InterviewPrepCoach = lazy(() => import('./components/InterviewPrepCoach'))
 const MasterResumeWizard = lazy(() => import('./components/MasterResumeWizard'));
 const JobsDeepSearch = lazy(() => import('./components/JobsDeepSearch'));
 const ApplicationIntegrationsHub = lazy(() => import('./components/ApplicationIntegrationsHub'));
+const ClaudeCliAuthPanel = lazy(() => import('./components/ClaudeCliAuthPanel'));
 const ApplicationTracker = lazy(() => import('./components/ApplicationTracker'));
+
+// Hash-based routing: keeps the active view in `location.hash` so the browser
+// back/forward buttons work and views are deep-linkable (e.g. #tracker).
+export type AppView = 'landing' | 'editor' | 'search' | 'ats' | 'interview' | 'cover-letter' | 'integrations' | 'tracker';
+const APP_VIEWS: AppView[] = ['landing', 'editor', 'search', 'ats', 'interview', 'cover-letter', 'integrations', 'tracker'];
+
+function readViewFromHash(): AppView {
+  if (typeof window === 'undefined') return 'landing';
+  const raw = window.location.hash.replace(/^#\/?/, '') as AppView;
+  return APP_VIEWS.includes(raw) ? raw : 'landing';
+}
 
 // Minimal, dependency-free fallback — deliberately not another heavy component.
 function ViewLoadingFallback() {
@@ -155,7 +167,7 @@ const getInitialResume = (): ResumeData => {
 export default function App() {
   const { showError, showSuccess, showToast } = useToast();
   // Global View Navigation State
-  const [currentView, setCurrentView] = useState<'landing' | 'editor' | 'search' | 'ats' | 'interview' | 'cover-letter' | 'integrations' | 'tracker'>('landing');
+  const [currentView, setCurrentView] = useState<'landing' | 'editor' | 'search' | 'ats' | 'interview' | 'cover-letter' | 'integrations' | 'tracker'>(() => readViewFromHash());
 
   // Dark Mode state & sync
   const [darkMode, setDarkMode] = useState<boolean>(() => {
@@ -185,6 +197,17 @@ export default function App() {
 
   // Flexible AI Configuration Settings State (Local Storage persistent)
   const [showAiSettings, setShowAiSettings] = useState(false);
+
+  // Close the AI settings modal on Escape.
+  useEffect(() => {
+    if (!showAiSettings) return;
+    const onKey = (e: KeyboardEvent) => {
+      if (e.key === 'Escape') setShowAiSettings(false);
+    };
+    window.addEventListener('keydown', onKey);
+    return () => window.removeEventListener('keydown', onKey);
+  }, [showAiSettings]);
+
   const [aiConfig, setAiConfig] = useState<AiConfig>(() => {
     const saved = localStorage.getItem('ats_ai_config');
     if (saved) {
@@ -239,6 +262,25 @@ export default function App() {
       window.history.replaceState({}, '', window.location.pathname + (newSearch ? `?${newSearch}` : ''));
     }
   }, []);
+
+  // Keep location.hash in sync with the active view (and vice-versa for
+  // back/forward). 'landing' clears the hash so the root URL stays clean.
+  // pushState (not replace) so each view switch is its own history entry and
+  // the back button walks between views. On mount currentView already matches
+  // the hash (see readViewFromHash initializer), so this is a no-op then.
+  useEffect(() => {
+    const desired = currentView === 'landing' ? '' : `#${currentView}`;
+    if ((window.location.hash || '') !== desired) {
+      window.history.pushState({}, '', window.location.pathname + window.location.search + desired);
+    }
+  }, [currentView]);
+
+  useEffect(() => {
+    const onHashChange = () => setCurrentView(readViewFromHash());
+    window.addEventListener('hashchange', onHashChange);
+    return () => window.removeEventListener('hashchange', onHashChange);
+  }, []);
+
   const [targetLanguage, setTargetLanguage] = useState<'en' | 'fr'>('en');
   const [optimizeForRelocation, setOptimizeForRelocation] = useState(false);
   const [targetCompany, setTargetCompany] = useState('');
@@ -274,7 +316,15 @@ export default function App() {
     url: string;
     description: string;
     source: string;
+    relocationOffered?: boolean;
+    visaSupport?: string;
+    fitScore?: number;
+    verified?: boolean;
+    alreadyTracked?: boolean;
+    salary?: string;
+    postedAt?: string;
   }[] | null>(null);
+  const [jobSourcePicks, setJobSourcePicks] = useState<string[] | null>(null);
   const [isSearchingJobs, setIsSearchingJobs] = useState(false);
   const [searchError, setSearchError] = useState<string | null>(null);
   const [selectedSearchJobIndex, setSelectedSearchJobIndex] = useState<number | null>(null);
@@ -282,6 +332,11 @@ export default function App() {
   const [supportsRelocation, setSupportsRelocation] = useState(false);
   const [searchQueryUsed, setSearchQueryUsed] = useState('');
   const [searchLocationUsed, setSearchLocationUsed] = useState('');
+  const [deepJobMode, setDeepJobMode] = useState(() => localStorage.getItem('ats_deep_job_mode') === 'true');
+  const [jobWatchlistRaw, setJobWatchlistRaw] = useState(() => localStorage.getItem('ats_job_watchlist') || '');
+  useEffect(() => { localStorage.setItem('ats_deep_job_mode', String(deepJobMode)); }, [deepJobMode]);
+  useEffect(() => { localStorage.setItem('ats_job_watchlist', jobWatchlistRaw); }, [jobWatchlistRaw]);
+
 
   // Persist search filters
   useEffect(() => {
@@ -300,7 +355,7 @@ export default function App() {
     localStorage.setItem('ats_remote_status', remoteStatus);
   }, [remoteStatus]);
 
-  const { user, signInWithGoogle, signInWithLinkedin, logout } = useAuth();
+  const { user, signInWithGoogle, logout } = useAuth();
 
   useEffect(() => {
     if (user && aiConfig) {
@@ -352,6 +407,30 @@ export default function App() {
     }
   }, [user]);
 
+  // Restore the last tailoring result + cover letter so a page refresh (or an
+  // accidental tab close) doesn't wipe the work. Kept in localDb only: this is
+  // "don't lose it on reload" scratch state, per-browser, not synced history.
+  const lastSessionHydrated = useRef(false);
+  useEffect(() => {
+    localDb.getItem<{ tailorResult: TailorResponse | null; coverLetter: CoverLetterData | null } | null>(
+      'ats_last_session',
+      null
+    ).then((saved) => {
+      if (saved?.tailorResult) setTailorResult(saved.tailorResult);
+      if (saved?.coverLetter) setCoverLetter(saved.coverLetter);
+    }).catch((e) => console.error('Failed to restore last session', e))
+      .finally(() => { lastSessionHydrated.current = true; });
+  }, []);
+
+  useEffect(() => {
+    if (!lastSessionHydrated.current) return;
+    if (!tailorResult && !coverLetter) {
+      localDb.removeItem('ats_last_session').catch(() => {});
+    } else {
+      localDb.setItem('ats_last_session', { tailorResult, coverLetter }).catch(() => {});
+    }
+  }, [tailorResult, coverLetter]);
+
   // Save master resume on update. The Firestore write is debounced (~1.5s)
   // since this fires on every field edit and a full-document rewrite per
   // keystroke isn't necessary; local state and guest storage stay immediate.
@@ -386,6 +465,41 @@ export default function App() {
     } else {
       localDb.setItem('ats_master_resume', updated);
     }
+  };
+
+  // Merge loose skill strings (e.g. from the Job URL parser's "missing skills")
+  // into the master resume. Dedupes case-insensitively against every existing
+  // skill item, then appends the rest to an "Additional Skills" category
+  // (created if absent). Persists through the same debounced-save path as any
+  // other master-resume edit.
+  const handleAddSkillsToMaster = (skills: string[]): number => {
+    const incoming = Array.from(
+      new Set(skills.map((s) => s.trim()).filter(Boolean))
+    );
+    if (incoming.length === 0) return 0;
+
+    const categories = (masterResume.skills || []).map((c) => ({
+      ...c,
+      items: [...(c.items || [])],
+    }));
+    const existingLower = new Set(
+      categories.flatMap((c) => c.items.map((i) => i.toLowerCase()))
+    );
+    const toAdd = incoming.filter((s) => !existingLower.has(s.toLowerCase()));
+    if (toAdd.length === 0) return 0;
+
+    const ADDITIONAL = 'Additional Skills';
+    const target = categories.find(
+      (c) => c.category.trim().toLowerCase() === ADDITIONAL.toLowerCase()
+    );
+    if (target) {
+      target.items.push(...toAdd);
+    } else {
+      categories.push({ category: ADDITIONAL, items: toAdd });
+    }
+
+    handleUpdateMaster({ ...masterResume, skills: categories });
+    return toAdd.length;
   };
 
   // Safety net for the debounce above: an edit made less than 1.5s before the
@@ -763,6 +877,24 @@ export default function App() {
           jobType,
           salaryExpectation,
           remoteStatus,
+          deepMode: deepJobMode,
+          sources: jobSourcePicks && jobSourcePicks.length ? jobSourcePicks : undefined,
+          watchlist: jobWatchlistRaw
+            .split(',')
+            .map((s2) => s2.trim())
+            .filter(Boolean)
+            .slice(0, 20),
+          trackedKeys: (() => {
+            try {
+              const raw = localStorage.getItem('ats_tailor_job_applications');
+              const apps = raw ? JSON.parse(raw) : [];
+              return Array.isArray(apps)
+                ? apps.map((a: any) => `${a.company || ''}::${a.title || ''}`).filter((k: string) => k.length > 2)
+                : [];
+            } catch {
+              return [];
+            }
+          })(),
           model: selectedModel,
           aiConfig,
         },
@@ -1480,6 +1612,7 @@ export default function App() {
                   onClick={() => setShowAiSettings(true)}
                   className="p-1.5 rounded-full bg-slate-100 hover:bg-slate-200 dark:bg-slate-800 dark:hover:bg-slate-700 text-slate-600 dark:text-slate-300 border border-transparent dark:border-slate-700 shadow-xs transition-colors cursor-pointer flex items-center justify-center"
                   title="Configure custom AI provider and API keys"
+                  aria-label="Configure custom AI provider and API keys"
                   type="button"
                 >
                   <Settings className="w-4 h-4 text-indigo-500" />
@@ -1488,6 +1621,8 @@ export default function App() {
                   onClick={() => setDarkMode(!darkMode)}
                   className="p-1.5 rounded-full bg-slate-100 hover:bg-slate-200 dark:bg-slate-800 dark:hover:bg-slate-700 text-slate-600 dark:text-slate-300 border border-transparent dark:border-slate-700 shadow-xs transition-colors cursor-pointer flex items-center justify-center"
                   title={darkMode ? 'Switch to Light Mode' : 'Switch to Dark Mode'}
+                  aria-label={darkMode ? 'Switch to light mode' : 'Switch to dark mode'}
+                  aria-pressed={darkMode}
                   type="button"
                 >
                   {darkMode ? <Sun className="w-4 h-4 text-amber-400" /> : <Moon className="w-4 h-4 text-indigo-500" />}
@@ -1505,11 +1640,17 @@ export default function App() {
                 </div>
               ) : (
                 <div className="flex items-center gap-2 pl-2 border-l border-slate-200 dark:border-slate-700">
-                  <button onClick={signInWithGoogle} className="text-[11px] font-semibold px-2.5 py-1 bg-indigo-50 dark:bg-indigo-900/30 text-indigo-700 dark:text-indigo-400 rounded-full hover:bg-indigo-100 dark:hover:bg-indigo-800/50 cursor-pointer flex items-center gap-1 transition-colors">
+                  <button
+                    onClick={async () => {
+                      try {
+                        await signInWithGoogle();
+                      } catch (e: any) {
+                        showError('Google sign-in failed', e?.message || e);
+                      }
+                    }}
+                    className="text-[11px] font-semibold px-2.5 py-1 bg-indigo-50 dark:bg-indigo-900/30 text-indigo-700 dark:text-indigo-400 rounded-full hover:bg-indigo-100 dark:hover:bg-indigo-800/50 cursor-pointer flex items-center gap-1 transition-colors"
+                  >
                     Sign In (Google)
-                  </button>
-                  <button onClick={signInWithLinkedin} className="text-[11px] font-semibold px-2.5 py-1 bg-blue-50 dark:bg-blue-900/30 text-blue-700 dark:text-blue-400 rounded-full hover:bg-blue-100 dark:hover:bg-blue-800/50 cursor-pointer flex items-center gap-1 transition-colors">
-                    Sign In (LinkedIn)
                   </button>
                 </div>
               )}
@@ -1517,8 +1658,9 @@ export default function App() {
           </div>
 
           {/* Persistent Feature Navigation Tabs */}
-          <div className="flex gap-1 bg-slate-100/80 dark:bg-slate-800/80 p-1 rounded-xl text-xs font-bold mt-3 max-w-full overflow-x-auto" id="main-features-nav">
+          <nav className="flex gap-1 bg-slate-100/80 dark:bg-slate-800/80 p-1 rounded-xl text-xs font-bold mt-3 max-w-full overflow-x-auto" id="main-features-nav" aria-label="Main views">
             <button
+              aria-current={currentView === 'editor' ? 'page' : undefined}
               onClick={() => setCurrentView('editor')}
               className={`flex items-center gap-1.5 px-3.5 py-2 rounded-lg transition-all flex-shrink-0 cursor-pointer ${
                 currentView === 'editor'
@@ -1531,6 +1673,7 @@ export default function App() {
               Resume Editor
             </button>
             <button
+              aria-current={currentView === 'search' ? 'page' : undefined}
               onClick={() => setCurrentView('search')}
               className={`flex items-center gap-1.5 px-3.5 py-2 rounded-lg transition-all flex-shrink-0 cursor-pointer ${
                 currentView === 'search'
@@ -1543,6 +1686,7 @@ export default function App() {
               AI Job Search
             </button>
             <button
+              aria-current={currentView === 'ats' ? 'page' : undefined}
               onClick={() => setCurrentView('ats')}
               className={`flex items-center gap-1.5 px-3.5 py-2 rounded-lg transition-all flex-shrink-0 cursor-pointer relative ${
                 currentView === 'ats'
@@ -1561,6 +1705,7 @@ export default function App() {
               )}
             </button>
             <button
+              aria-current={currentView === 'cover-letter' ? 'page' : undefined}
               onClick={() => setCurrentView('cover-letter')}
               className={`flex items-center gap-1.5 px-3.5 py-2 rounded-lg transition-all flex-shrink-0 cursor-pointer ${
                 currentView === 'cover-letter'
@@ -1573,6 +1718,7 @@ export default function App() {
               ATS Cover Letter
             </button>
             <button
+              aria-current={currentView === 'interview' ? 'page' : undefined}
               onClick={() => setCurrentView('interview')}
               className={`flex items-center gap-1.5 px-3.5 py-2 rounded-lg transition-all flex-shrink-0 cursor-pointer relative ${
                 currentView === 'interview'
@@ -1586,6 +1732,7 @@ export default function App() {
               <span className="bg-indigo-100 dark:bg-indigo-950 text-indigo-700 dark:text-indigo-300 text-[9px] font-bold px-1.5 py-0.5 rounded ml-1 uppercase">NEW</span>
             </button>
             <button
+              aria-current={currentView === 'integrations' ? 'page' : undefined}
               onClick={() => setCurrentView('integrations')}
               className={`flex items-center gap-1.5 px-3.5 py-2 rounded-lg transition-all flex-shrink-0 cursor-pointer ${
                 currentView === 'integrations'
@@ -1598,6 +1745,7 @@ export default function App() {
               Outreach Suite
             </button>
             <button
+              aria-current={currentView === 'tracker' ? 'page' : undefined}
               onClick={() => setCurrentView('tracker')}
               className={`flex items-center gap-1.5 px-3.5 py-2 rounded-lg transition-all flex-shrink-0 cursor-pointer relative ${
                 currentView === 'tracker'
@@ -1610,7 +1758,7 @@ export default function App() {
               Application Tracker
               <span className="bg-emerald-100 dark:bg-emerald-950 text-emerald-700 dark:text-emerald-300 text-[9px] font-bold px-1.5 py-0.5 rounded ml-1 uppercase animate-pulse">BETA</span>
             </button>
-          </div>
+          </nav>
         </div>
       </header>
 
@@ -1809,6 +1957,12 @@ export default function App() {
                   {/* Left Column: Jobs Deep Search Input & Results (7 Cols) */}
                   <div className="lg:col-span-7 space-y-4">
                     <JobsDeepSearch
+                      sourcePicks={jobSourcePicks}
+                      setSourcePicks={setJobSourcePicks}
+                      deepMode={deepJobMode}
+                      setDeepMode={setDeepJobMode}
+                      watchlistRaw={jobWatchlistRaw}
+                      setWatchlistRaw={setJobWatchlistRaw}
                       searchBasedOnResume={searchBasedOnResume}
                       setSearchBasedOnResume={setSearchBasedOnResume}
                       searchQuery={searchQuery}
@@ -1844,7 +1998,7 @@ export default function App() {
 
                   {/* Right Column: Information Onboarding (5 Cols) */}
                   <div className="lg:col-span-5 space-y-4">
-                    <div className="bg-white border border-slate-200 rounded-2xl p-6 shadow-sm space-y-4 relative overflow-hidden sticky top-24">
+                    <div className="bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-800 rounded-2xl p-6 shadow-sm space-y-4 relative overflow-hidden sticky top-24">
                       <div className="absolute top-0 right-0 w-24 h-24 bg-indigo-50 rounded-full blur-2xl opacity-70 pointer-events-none" />
                       <div className="w-12 h-12 bg-indigo-50 text-indigo-600 rounded-xl flex items-center justify-center">
                         <Search className="w-6 h-6" />
@@ -1880,7 +2034,7 @@ export default function App() {
                   {tailorResult ? (
                     <div className="space-y-6">
                       {/* Result Toolbar */}
-                      <div className="flex flex-col sm:flex-row sm:items-center sm:justify-between gap-3 bg-white border border-slate-200 rounded-xl p-4 print:hidden" id="result-toolbar">
+                      <div className="flex flex-col sm:flex-row sm:items-center sm:justify-between gap-3 bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-800 rounded-xl p-4 print:hidden" id="result-toolbar">
                         <div className="flex items-center gap-3">
                           <button
                             onClick={handleBackToInputs}
@@ -1989,7 +2143,7 @@ export default function App() {
                             />
                           </div>
                         ) : activeResultTab === 'resume' ? (
-                          <div className="bg-white border border-slate-200 rounded-2xl p-5 shadow-sm space-y-4">
+                          <div className="bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-800 rounded-2xl p-5 shadow-sm space-y-4">
                             <div className="flex justify-between items-center pb-3 border-b border-slate-100 print:hidden">
                               <h3 className="text-sm font-bold text-slate-900 dark:text-white flex items-center gap-1.5">
                                 <FileText className="w-4.5 h-4.5 text-indigo-500" />
@@ -2071,6 +2225,7 @@ export default function App() {
                             coverLetter={coverLetter}
                             atsScore={tailorResult.atsScoreAfter}
                             onEmailSent={handleEmailSent}
+                            onAddSkills={handleAddSkillsToMaster}
                             targetCompany={targetCompany}
                             targetTitle={targetTitle}
                           />
@@ -2081,7 +2236,7 @@ export default function App() {
                     <div className="grid grid-cols-1 lg:grid-cols-12 gap-6 animate-fade-in" id="ats-onboarding-workspace">
                       {/* Left Side: Onboarding/Information Card */}
                       <div className="lg:col-span-5 space-y-4">
-                        <div className="bg-white border border-slate-200 rounded-2xl p-6 shadow-sm space-y-4 relative overflow-hidden sticky top-24">
+                        <div className="bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-800 rounded-2xl p-6 shadow-sm space-y-4 relative overflow-hidden sticky top-24">
                           <div className="absolute top-0 right-0 w-24 h-24 bg-indigo-50 rounded-full blur-2xl opacity-70 pointer-events-none" />
                           <div className="w-12 h-12 bg-indigo-50 text-indigo-600 rounded-xl flex items-center justify-center">
                             <Sparkles className="w-6 h-6 animate-pulse text-indigo-500" />
@@ -2140,7 +2295,7 @@ export default function App() {
               {currentView === 'cover-letter' && (
                 <div className="space-y-6">
                   {tailorResult ? (
-                    <div className="bg-white border border-slate-200 rounded-2xl p-6 shadow-sm space-y-4 animate-fade-in">
+                    <div className="bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-800 rounded-2xl p-6 shadow-sm space-y-4 animate-fade-in">
                       {coverLetter ? (
                         <CoverLetterPreview
                           coverLetter={coverLetter}
@@ -2179,7 +2334,7 @@ export default function App() {
                       )}
                     </div>
                   ) : (
-                    <div className="bg-white border border-slate-200 rounded-2xl p-6 shadow-sm space-y-4 max-w-2xl mx-auto my-8 text-center animate-fade-in" id="cover-letter-onboarding">
+                    <div className="bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-800 rounded-2xl p-6 shadow-sm space-y-4 max-w-2xl mx-auto my-8 text-center animate-fade-in" id="cover-letter-onboarding">
                       <div className="w-12 h-12 bg-indigo-50 text-indigo-600 rounded-xl flex items-center justify-center mx-auto">
                         <FileText className="w-6 h-6" />
                       </div>
@@ -2230,6 +2385,7 @@ export default function App() {
                     coverLetter={coverLetter}
                     atsScore={tailorResult ? tailorResult.atsScoreAfter : 85}
                     onEmailSent={handleEmailSent}
+                    onAddSkills={handleAddSkillsToMaster}
                     targetCompany={targetCompany}
                     targetTitle={targetTitle}
                   />
@@ -2259,23 +2415,31 @@ export default function App() {
       {/* 3. FLEXIBLE AI CONFIGURATION MODAL */}
       <AnimatePresence>
         {showAiSettings && (
-          <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-slate-950/60 backdrop-blur-xs">
+          <div
+            className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-slate-950/60 backdrop-blur-xs"
+            onClick={() => setShowAiSettings(false)}
+          >
             <motion.div
               initial={{ opacity: 0, scale: 0.95, y: 10 }}
               animate={{ opacity: 1, scale: 1, y: 0 }}
               exit={{ opacity: 0, scale: 0.95, y: 10 }}
               className="bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-800 rounded-2xl max-w-lg w-full shadow-2xl overflow-hidden"
               id="ai-config-modal"
+              role="dialog"
+              aria-modal="true"
+              aria-labelledby="ai-config-title"
+              onClick={(e) => e.stopPropagation()}
             >
               <div className="px-6 py-4 border-b border-slate-100 dark:border-slate-800 flex justify-between items-center bg-slate-50 dark:bg-slate-900/50">
                 <div className="flex items-center gap-2">
                   <Settings className="w-5 h-5 text-indigo-500 animate-spin" style={{ animationDuration: '3s' }} />
-                  <h3 className="text-base font-extrabold text-slate-900 dark:text-white">AI Engine Configuration</h3>
+                  <h3 id="ai-config-title" className="text-base font-extrabold text-slate-900 dark:text-white">AI Engine Configuration</h3>
                 </div>
                 <button
                   onClick={() => setShowAiSettings(false)}
                   className="p-1 rounded-lg hover:bg-slate-200 dark:hover:bg-slate-800 text-slate-400 hover:text-slate-600 transition-colors cursor-pointer"
                   type="button"
+                  aria-label="Close settings"
                 >
                   <X className="w-5 h-5" />
                 </button>
@@ -2317,9 +2481,14 @@ export default function App() {
                     <option value="claude-cli">Claude Code CLI (local dev only, no key)</option>
                   </select>
                   {aiConfig.provider === 'claude-cli' && (
-                    <p className="text-[10px] text-amber-600 dark:text-amber-400 font-semibold">
-                      Uses the Claude Code CLI on this machine (whatever subscription is logged in there). Local development only — this cannot work on a deployed server and requires ENABLE_CLAUDE_CLI_PROVIDER=true in .env.
-                    </p>
+                    <>
+                      <p className="text-[10px] text-amber-600 dark:text-amber-400 font-semibold">
+                        Uses the Claude Code CLI on this machine (whatever subscription is logged in there). Local development only — this cannot work on a deployed server and requires ENABLE_CLAUDE_CLI_PROVIDER=true in .env.
+                      </p>
+                      <Suspense fallback={null}>
+                        <ClaudeCliAuthPanel />
+                      </Suspense>
+                    </>
                   )}
                 </div>
 
@@ -2381,6 +2550,45 @@ export default function App() {
                   )}
                 </div>
 
+                <details className="rounded-xl border border-slate-200 dark:border-slate-800 bg-slate-50/60 dark:bg-slate-900/40 overflow-hidden">
+                  <summary className="px-3 py-2 text-xs font-bold text-slate-700 dark:text-slate-300 cursor-pointer select-none">
+                    Advanced: per-task provider
+                  </summary>
+                  <div className="px-3 pb-3 pt-1 space-y-2">
+                    <p className="text-[10px] text-slate-500 dark:text-slate-400">
+                      Pin specific tasks to a provider. Everything else uses the provider above. Web search always uses Gemini.
+                    </p>
+                    {([
+                      ['resumeWriting', 'Resume writing & bullets'],
+                      ['coverLetter', 'Cover letters'],
+                      ['interviewPrep', 'Interview prep'],
+                      ['analysis', 'Scoring & analysis'],
+                      ['parsing', 'Resume file parsing'],
+                    ] as const).map(([bucket, label]) => (
+                      <div key={bucket} className="flex items-center justify-between gap-2">
+                        <span className="text-[11px] text-slate-600 dark:text-slate-400">{label}</span>
+                        <select
+                          value={aiConfig.taskOverrides?.[bucket] || ''}
+                          onChange={(e) => {
+                            const next = { ...(aiConfig.taskOverrides || {}) } as Record<string, string>;
+                            if (e.target.value) next[bucket] = e.target.value;
+                            else delete next[bucket];
+                            setAiConfig({ ...aiConfig, taskOverrides: Object.keys(next).length ? (next as any) : undefined });
+                          }}
+                          className="bg-white dark:bg-slate-800 text-slate-900 dark:text-white border border-slate-200 dark:border-slate-700 rounded-lg px-2 py-1 text-[11px] outline-none focus:ring-2 focus:ring-indigo-500"
+                        >
+                          <option value="">Default ({aiConfig.provider})</option>
+                          <option value="gemini">Gemini</option>
+                          <option value="openai">OpenAI</option>
+                          <option value="openrouter">OpenRouter</option>
+                          <option value="custom">Custom</option>
+                          <option value="claude-cli">Claude Code CLI</option>
+                        </select>
+                      </div>
+                    ))}
+                  </div>
+                </details>
+
                 <div className="pt-4 border-t border-slate-100 dark:border-slate-800 flex justify-end gap-2">
                   <button
                     type="button"
@@ -2389,7 +2597,8 @@ export default function App() {
                         provider: 'gemini',
                         apiKey: '',
                         model: 'gemini-3.5-flash',
-                        customEndpoint: ''
+                        customEndpoint: '',
+                        taskOverrides: undefined,
                       });
                       setShowAiSettings(false);
                     }}

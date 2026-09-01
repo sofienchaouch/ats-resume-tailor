@@ -5,6 +5,30 @@ import SpellcheckField from './SpellcheckField';
 import { useToast } from './Toast';
 import { apiFetch, apiFetchBlob } from '../utils/apiClient';
 import { estimateResumeLength } from '../utils/pageEstimate';
+import { resumeToMarkdown, downloadMarkdown, toMarkdownFileName } from '../utils/obsidianSync';
+
+/**
+ * Serialize every same-origin stylesheet the app has loaded into one CSS string.
+ *
+ * Cross-origin sheets (Google Fonts) throw on .cssRules access and are skipped --
+ * they are re-declared with an @import in the export instead.
+ */
+function collectDocumentCss(): string {
+  const chunks: string[] = [];
+  for (const sheet of Array.from(document.styleSheets)) {
+    let rules: CSSRuleList | null;
+    try {
+      rules = sheet.cssRules;
+    } catch {
+      continue; // cross-origin, not readable
+    }
+    if (!rules) continue;
+    for (const rule of Array.from(rules)) {
+      chunks.push(rule.cssText);
+    }
+  }
+  return chunks.join(String.fromCharCode(10));
+}
 
 interface ResumePreviewProps {
   resumeData: ResumeData;
@@ -593,6 +617,11 @@ export default function ResumePreview({
     });
   };
 
+  const handleExportMarkdown = () => {
+    const md = resumeToMarkdown(resumeData);
+    downloadMarkdown(toMarkdownFileName(`${resumeData.contact.name || 'resume'} resume`), md);
+  };
+
   const handleExportDoc = async () => {
     // docx is only needed for this one export action, so it's dynamically
     // imported here instead of sitting in ResumePreview's chunk for every
@@ -1048,21 +1077,49 @@ export default function ResumePreview({
       element.style.boxShadow = 'none';
       element.style.borderRadius = '0';
 
+      // Ship the app's OWN compiled stylesheet rather than pulling the Tailwind
+      // Play CDN. That CDN serves Tailwind v3 and compiles in-browser, but this
+      // app is built on Tailwind v4 -- so half the utility classes resolved to
+      // nothing and the resume lost its layout. Inlining the real CSS also makes
+      // PDF generation work offline and keeps the PDF pixel-identical to what
+      // the user sees on screen.
+      const inlinedCss = collectDocumentCss();
+
       const htmlContent = `
         <!DOCTYPE html>
         <html>
         <head>
           <meta charset="UTF-8">
-          <script src="https://cdn.tailwindcss.com"></script>
           <style>
             @import url('https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800&family=Playfair+Display:wght@400;500;600;700&display=swap');
-            body { font-family: 'Inter', sans-serif; background: white; margin: 0; padding: 0; }
+          </style>
+          <style>${inlinedCss}</style>
+          <style>
+            /* Page geometry is owned by the server's puppeteer margin option, so
+               declare size only -- a margin here would fight it. */
+            @page { size: A4; }
+            html, body { background: #fff; margin: 0; padding: 0; }
+            body { font-family: 'Inter', sans-serif; }
+            /* The canvas is the whole document here, so let it use the full
+               printable width instead of the fixed on-screen page width. */
+            #printable-resume-canvas {
+              /* index.css pins this absolutely at left:0 for in-browser
+                 window.print(). Here the canvas IS the document, and staying
+                 absolute made it escape the page box and sit flush against the
+                 paper edge. Put it back in normal flow. */
+              position: static !important;
+              left: auto !important;
+              top: auto !important;
+              width: 100% !important;
+              max-width: 100% !important;
+              border: none !important;
+              box-shadow: none !important;
+              border-radius: 0 !important;
+            }
           </style>
         </head>
-        <body class="bg-white p-0 m-0 print:p-0 print:m-0">
-          <div class="w-[210mm] mx-auto bg-white overflow-hidden">
-            ${element.outerHTML}
-          </div>
+        <body>
+          ${element.outerHTML}
         </body>
         </html>
       `;
@@ -1330,6 +1387,16 @@ export default function ResumePreview({
               <FileDown className="w-4 h-4 text-red-500" />
             )}
             {isExportingPdf ? 'Generating...' : 'PDF (.pdf)'}
+          </button>
+
+          <button
+            onClick={handleExportMarkdown}
+            className="flex items-center gap-1.5 text-xs font-semibold bg-white dark:bg-slate-800 text-slate-700 dark:text-slate-200 border border-slate-200 dark:border-slate-700 hover:bg-slate-50 dark:hover:bg-slate-700 px-3 py-1.5 rounded-lg transition-colors"
+            id="btn-export-markdown"
+            title="Download as Markdown (drop into an Obsidian vault)"
+          >
+            <FileDown className="w-4 h-4 text-violet-500" />
+            Markdown (.md)
           </button>
 
           <button

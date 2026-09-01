@@ -10,9 +10,13 @@ import chromium from "@sparticuz/chromium";
 import fs from "fs";
 import os from "os";
 import { spawn } from "child_process";
+import crypto from "node:crypto";
 import { rateLimit, ipKeyGenerator } from "express-rate-limit";
 import type { ZodType } from "zod";
 import * as schemas from "./server/schemas";
+import { fetchFromSources, listSources, type SourceOpts } from "./server/jobSources";
+import { rankJobs, dedupeJobs, markTracked, trackedKeySet, type NormalizedJob } from "./server/jobRank";
+import { providerCapabilities, buildProviderChain, isProviderLevelFailure, type ProviderId } from "./server/capabilities";
 import { computeTailorScoring } from "./server/scoring";
 import { detectFabrications } from "./server/fabricationGuard";
 import { attachUser, requireServerKey } from "./server/auth";
@@ -44,6 +48,34 @@ app.use((req, res, next) => {
       req.body.aiConfig = {};
     }
     req.body.aiConfig.apiKey = customKey.trim();
+  }
+  next();
+});
+
+// Tag each AI request with a coarse task bucket derived from its path, so the
+// provider router can honour per-task overrides (AI Settings > Advanced). The
+// server owns this mapping; a client-sent taskBucket is ignored. Web-grounded
+// routes are deliberately unmapped -- they are always Gemini regardless.
+const PATH_TASK_BUCKET: Record<string, string> = {
+  "/api/improve-bullet": "resumeWriting",
+  "/api/tailor": "resumeWriting",
+  "/api/translate-resume": "resumeWriting",
+  "/api/cover-letter": "coverLetter",
+  "/api/translate-cover-letter": "coverLetter",
+  "/api/interview-prep": "interviewPrep",
+  "/api/interview-feedback": "interviewPrep",
+  "/api/score-resume": "analysis",
+  "/api/analyze-job-url": "analysis",
+  "/api/networking-suggestions": "analysis",
+  "/api/parse-email-interview": "analysis",
+  "/api/parse-resume": "parsing",
+};
+app.use((req, _res, next) => {
+  const bucket = PATH_TASK_BUCKET[req.path];
+  if (bucket) {
+    if (!req.body) req.body = {};
+    if (!req.body.aiConfig) req.body.aiConfig = {};
+    req.body.aiConfig.taskBucket = bucket;
   }
   next();
 });
@@ -319,6 +351,27 @@ function flattenContentsToPrompt(contents: any, systemInstruction?: any): string
 }
 
 /**
+ * Environment for any spawned `claude` process.
+ *
+ * If this server was itself launched from inside a Claude Code session, the
+ * process env carries that session's CLAUDE_* / CLAUDECODE / ANTHROPIC_BASE_URL
+ * variables (messaging socket, host session id, host auth-refresh flags...).
+ * A child `claude` inheriting them tries to attach to the parent session
+ * instead of starting a standalone one, which fails in confusing ways --
+ * observed on Windows as exit 0xC0000142 (STATUS_DLL_INIT_FAILED) with no
+ * stderr at all. Strip them so the CLI always starts clean.
+ */
+function claudeCliEnv(): NodeJS.ProcessEnv {
+  const env: NodeJS.ProcessEnv = { ...process.env };
+  for (const key of Object.keys(env)) {
+    if (/^CLAUDE(CODE)?($|_)/i.test(key) || key === "ANTHROPIC_BASE_URL") {
+      delete env[key];
+    }
+  }
+  return env;
+}
+
+/**
  * Routes a generation request through the local Claude Code CLI, authenticated
  * to whatever subscription is logged into `claude` on this machine — no API key.
  *
@@ -331,6 +384,13 @@ async function callClaudeCli(params: {
   model: string;
   contents: any;
   config?: any;
+  /**
+   * Run with the WebSearch tool enabled (and permissions bypassed, since a
+   * headless -p session has no one to approve). Only the search phase of a
+   * two-phase route uses this; the structuring phase stays tool-free. Gated by
+   * the caller on ENABLE_CLAUDE_CLI_WEB_SEARCH.
+   */
+  webSearch?: boolean;
 }): Promise<any> {
   if (process.env.ENABLE_CLAUDE_CLI_PROVIDER !== "true") {
     throw new Error(
@@ -345,7 +405,7 @@ async function callClaudeCli(params: {
 
   // Same schema-injection trick as callOpenAICompatible: only Gemini has native
   // structured output, so every other path asks nicely in the prompt instead.
-  if (params.config?.responseMimeType === "application/json" && params.config?.responseSchema) {
+  if (!params.webSearch && params.config?.responseMimeType === "application/json" && params.config?.responseSchema) {
     prompt += `\n\nCRITICAL: Your output MUST be a valid JSON object matching this JSON Schema:\n${JSON.stringify(params.config.responseSchema, null, 2)}\n\nOutput ONLY the JSON object. No markdown code fences, no other text.`;
   }
 
@@ -358,6 +418,8 @@ async function callClaudeCli(params: {
     ? ["--model", requestedModel]
     : [];
 
+  const childEnv = claudeCliEnv();
+
   return new Promise((resolve, reject) => {
     // --tools "" disables every tool (WebFetch, Bash, Read, etc). Without this,
     // the CLI runs as a full agentic session: it can attempt tool calls (e.g.
@@ -366,8 +428,14 @@ async function callClaudeCli(params: {
     // blocked/needing permission/retrying leaks into the result text — which then
     // gets parsed straight into resume JSON fields. This provider is a plain
     // text-in/JSON-out proxy and should never have tool access.
-    const child = spawn("claude", ["-p", "--output-format", "json", "--tools", "", ...modelArgs], {
+    // Phase-1 search needs the WebSearch tool; everything else runs tool-free so
+    // no tool-use narration can leak into the result text.
+    const toolArgs = params.webSearch
+      ? ["--tools", "WebSearch", "--permission-mode", "bypassPermissions"]
+      : ["--tools", ""];
+    const child = spawn("claude", ["-p", "--output-format", "json", ...toolArgs, ...modelArgs], {
       stdio: ["pipe", "pipe", "pipe"],
+      env: childEnv,
     });
 
     let stdout = "";
@@ -380,25 +448,65 @@ async function callClaudeCli(params: {
     });
 
     child.on("close", (code) => {
-      if (code !== 0) {
-        reject(new Error(`Claude Code CLI exited with code ${code}: ${stderr || "no error output"}`));
+      // The CLI frequently exits non-zero AND writes the real reason into its
+      // stdout JSON envelope, e.g.
+      //   {"is_error":true,"result":"Failed to authenticate: OAuth session expired..."}
+      // Parse that first so the actionable message isn't lost behind a bare
+      // "exited with code 1: no error output".
+      let envelope: any;
+      try {
+        envelope = stdout.trim() ? JSON.parse(stdout) : null;
+      } catch {
+        envelope = null;
+      }
+
+      if (envelope && envelope.is_error) {
+        const detail = envelope.result || stderr || "unknown error";
+        const authHint = /auth|oauth|login|expired|credential/i.test(detail)
+          ? " — run `claude` then `/login` to re-authenticate, or switch the AI provider in Settings."
+          : "";
+        reject(new Error(`Claude Code CLI error: ${detail}${authHint}`));
         return;
       }
-      try {
-        const envelope = JSON.parse(stdout);
-        if (envelope.is_error) {
-          reject(new Error(`Claude Code CLI reported an error: ${envelope.result || stderr || "unknown error"}`));
-          return;
-        }
-        const resultText = envelope.result || "";
-        if (!resultText) {
-          reject(new Error(`Claude Code CLI returned an empty result. Raw output: ${stdout.slice(0, 500)}`));
-          return;
-        }
-        resolve({ text: resultText, raw: envelope });
-      } catch (parseErr: any) {
-        reject(new Error(`Failed to parse Claude Code CLI output as JSON: ${parseErr.message}. Raw output: ${stdout.slice(0, 500)}`));
+
+      if (code !== 0) {
+        // 0xC0000142 (STATUS_DLL_INIT_FAILED) / 0xC0000005 (ACCESS_VIOLATION):
+        // the Windows loader killed the child before it ran. The usual cause is
+        // a polluted environment (see childEnv above); if it survives that, it's
+        // machine-level (AV, desktop-heap exhaustion, a broken shim).
+        const win = code === 3221225794 || code === 3221225477
+          ? ' — Windows could not start the `claude` process (loader failure). Check that `claude --version` runs in a plain terminal.'
+          : "";
+        reject(new Error(`Claude Code CLI exited with code ${code}: ${stderr || "no error output"}${win}`));
+        return;
       }
+
+      if (!envelope) {
+        reject(new Error(`Failed to parse Claude Code CLI output as JSON. Raw output: ${stdout.slice(0, 500)}`));
+        return;
+      }
+
+      const resultText = envelope.result || "";
+      if (!resultText) {
+        reject(new Error(`Claude Code CLI returned an empty result. Raw output: ${stdout.slice(0, 500)}`));
+        return;
+      }
+
+      // A UserPromptSubmit hook configured in the developer's own Claude Code
+      // settings/plugins can intercept the prompt and return its own text as the
+      // result, with is_error false and exit 0. That text is not a model
+      // response and must never reach the JSON parsers downstream -- it would be
+      // written straight into resume fields.
+      if (/^\s*\w+\s+operation blocked by hook/i.test(resultText)) {
+        reject(new Error(
+          "A Claude Code hook intercepted the request, so no model output was produced. " +
+          "Disable the blocking UserPromptSubmit hook/plugin in your Claude Code settings, " +
+          "or use a different AI provider for this app."
+        ));
+        return;
+      }
+
+      resolve({ text: resultText, raw: envelope });
     });
 
     // Prompt goes on stdin, not argv: real prompts here carry the full resume
@@ -585,39 +693,78 @@ function safeJsonParse(text: string): any {
   }
 }
 
-// Wrapper function to execute generateContent with automatic retry on 429 rate limit/quota or 503 high demand errors
-async function generateContentWithRetry(params: {
+type RouterParams = {
   model: string;
   contents: any;
   config?: any;
   aiConfig?: {
-    provider?: 'gemini' | 'openai' | 'custom' | 'openrouter' | 'claude-cli';
+    provider?: string;
     apiKey?: string;
     model?: string;
     customEndpoint?: string;
+    taskOverrides?: Record<string, string>;
+    taskBucket?: string;
   };
-}): Promise<any> {
-  let provider = params.aiConfig?.provider || 'gemini';
-  let customApiKey = params.aiConfig?.apiKey ? String(params.aiConfig.apiKey).trim() : undefined;
+};
 
-  // Normalize empty or placeholder API keys to undefined
-  if (!customApiKey || customApiKey === "" || customApiKey === "null" || customApiKey === "undefined" || /^your_api_key$/i.test(customApiKey)) {
-    customApiKey = undefined;
+/**
+ * Public entrypoint for every AI route. Tries the selected provider, then falls
+ * through to any available fallback provider on a provider-level failure
+ * (bad/expired key, quota, CLI auth). Non-provider failures (malformed prompt,
+ * unrepairable schema violation) are thrown as-is from the first attempt.
+ */
+async function generateContentWithRetry(params: RouterParams): Promise<any> {
+  const chain = buildProviderChain(params);
+  if (chain.length === 0) {
+    throw new Error(
+      "This request needs an AI provider with live web access or document reading, " +
+      "and none is configured. Switch to Gemini in AI Settings."
+    );
   }
 
-  // Gracefully fallback to Gemini system default if a third-party provider is selected but no custom key is provided.
-  // claude-cli is exempt: it authenticates via a local CLI session, not a key, so
-  // "no key provided" is its normal, expected state rather than a reason to fall back.
-  if (provider !== 'gemini' && provider !== 'claude-cli' && !customApiKey) {
-    console.log(`[AI Routing] No valid API key provided for provider "${provider}". Falling back to Google Gemini with built-in system credentials.`);
-    provider = 'gemini';
+  let lastError: any = null;
+  for (let i = 0; i < chain.length; i++) {
+    const { provider, key } = chain[i];
+    try {
+      if (i > 0) {
+        console.warn(`[AI Routing] Provider "${chain[i - 1].provider}" failed; falling back to "${provider}".`);
+      }
+      return await runProvider(provider, key, params);
+    } catch (err: any) {
+      lastError = err;
+      if (i < chain.length - 1 && isProviderLevelFailure(err)) {
+        console.warn(`[AI Routing] Provider "${provider}" failed (${err?.message || err}). Trying next.`);
+        continue;
+      }
+      throw err;
+    }
   }
+  throw lastError;
+}
 
+/**
+ * One generation attempt against ONE provider. Provider + key are resolved by
+ * buildProviderChain; this function never falls back to Gemini on a missing key.
+ * The Gemini branch keeps its own model-fallback ladder + 429/503 backoff.
+ */
+async function runProvider(
+  provider: ProviderId,
+  customApiKey: string | undefined,
+  params: RouterParams,
+): Promise<any> {
   if (provider === 'claude-cli') {
+    // A call carrying a googleSearch tool is a phase-1 grounding request. Route
+    // it to the WebSearch-enabled spawn -- but only when explicitly opted in,
+    // since that needs --permission-mode bypassPermissions.
+    const wantsGrounding =
+      Array.isArray(params.config?.tools) &&
+      params.config.tools.some((t: any) => t && typeof t === "object" && "googleSearch" in t);
+    const webSearch = wantsGrounding && process.env.ENABLE_CLAUDE_CLI_WEB_SEARCH === "true";
     return await callClaudeCli({
       model: params.aiConfig?.model || params.model,
       contents: params.contents,
       config: params.config,
+      webSearch,
     });
   }
 
@@ -1068,7 +1215,7 @@ app.post("/api/tailor", expensiveAiLimiter, requireServerKey, validateBody(schem
     // which then breaks JSON parsing on the main tailor call below. Skip the
     // grounding call entirely for non-Gemini providers and fail fast with a
     // clear message instead of a wasted call followed by a cryptic crash.
-    if (jobUrl && !jobDescription && tailorProvider !== 'gemini') {
+    if (jobUrl && !jobDescription && !providerCapabilities(tailorProvider).webGrounding) {
       return res.status(400).json({
         error: "This AI provider can't fetch job URLs directly. Paste the job description text as well, or switch to Gemini in AI Settings.",
         code: "PROVIDER_CANNOT_FETCH_URL",
@@ -1078,7 +1225,7 @@ app.post("/api/tailor", expensiveAiLimiter, requireServerKey, validateBody(schem
 
     // If a Job URL is provided, fetch/summarize its details first in a separate non-JSON call using Google Search
     let fetchedJobDetails = "";
-    if (jobUrl && tailorProvider === 'gemini') {
+    if (jobUrl && providerCapabilities(tailorProvider).webGrounding) {
       try {
         console.log(`[Gemini] URL provided (${jobUrl}). Fetching details first via Google Search (without responseMimeType)...`);
         const searchPrompt = `Retrieve and analyze the job posting or details at the following URL: "${jobUrl}". Summarize the job requirements, responsibilities, qualifications, tech stack, and company name clearly so we can use it to tailor a resume.`;
@@ -1485,7 +1632,7 @@ app.post("/api/parse-resume", standardAiLimiter, requireServerKey, validateBody(
     let response;
     const provider = aiConfig?.provider || 'gemini';
 
-    if (fileType === "pdf" && provider === 'gemini') {
+    if (fileType === "pdf" && providerCapabilities(provider).multimodal) {
       // Gemini reads the PDF natively via multimodal inlineData.
       response = await generateContentWithRetry({
         model: model || "gemini-3.5-flash",
@@ -1572,9 +1719,29 @@ app.post("/api/parse-resume", standardAiLimiter, requireServerKey, validateBody(
 });
 
 // REST API endpoint to run a deep search for jobs using Gemini and Google Search Grounding
+// Which job-board source adapters are configured on this server (for the UI).
+app.get("/api/job-sources", (_req, res) => {
+  res.json({ sources: listSources(process.env) });
+});
+
 app.post("/api/jobs-deep-search", expensiveAiLimiter, requireServerKey, validateBody(schemas.jobsDeepSearchSchema), async (req, res) => {
   try {
     const { query, location, masterResume, useResume, supportsRelocation, jobType, salaryExpectation, remoteStatus, model, aiConfig } = req.body;
+
+    // This route is only meaningful with live web grounding: the search call
+    // below passes tools:[{googleSearch:{}}], but the non-Gemini adapters do
+    // not read config.tools at all. Without this gate the tool was dropped in
+    // silence and the follow-up structuring call turned the model's guesses
+    // into confident job listings with invented URLs -- wrong answers rather
+    // than an error. Fail loudly instead, the way /api/tailor already does for
+    // URL fetching.
+    if (!providerCapabilities(aiConfig?.provider).webGrounding) {
+      return res.status(400).json({
+        error: "AI Job Search needs live web access. Add a Gemini API key in AI Settings, or (local dev) set ENABLE_CLAUDE_CLI_WEB_SEARCH=true to search via the Claude Code CLI.",
+        code: "PROVIDER_CANNOT_SEARCH_WEB",
+        statusCode: 400,
+      });
+    }
 
     let searchQueryStr = query;
     let searchLocationStr = location;
@@ -1631,71 +1798,178 @@ Output your response as a JSON object matching: {"query": "string", "location": 
       return res.status(400).json({ error: "Search query is required" });
     }
 
-    const relocationClause = supportsRelocation 
-      ? " that support or offer relocation assistance, visa sponsorship, or relocation packages" 
-      : "";
+    const wantAiSource =
+      (req.body.sources ? req.body.sources.includes("ai") : true) &&
+      providerCapabilities(aiConfig?.provider).webGrounding;
 
-    const jobTypeClause = jobType && jobType !== "Any" ? ` for ${jobType} positions` : "";
-    const salaryClause = salaryExpectation && salaryExpectation !== "Any" ? ` with a salary of at least ${salaryExpectation}` : "";
-    const remoteClause = remoteStatus && remoteStatus !== "Any" ? ` that are ${remoteStatus}` : "";
+    const sourceOpts: SourceOpts = {
+      location: searchLocationStr,
+      watchlist: Array.isArray(req.body.watchlist) ? req.body.watchlist : undefined,
+      remoteOnly: remoteStatus === "Remote",
+      limit: 25,
+    };
 
-    console.log(`[Gemini] Performing web-grounded job search for "${searchQueryStr}" in "${searchLocationStr}"${supportsRelocation ? ' with relocation assistance' : ''}${jobTypeClause}${salaryClause}${remoteClause}...`);
-    const rawSearchResponse = await generateContentWithRetry({
-      model: model || "gemini-3.5-flash",
-      contents: `Search for active, real job postings matching query "${searchQueryStr}" in location "${searchLocationStr}"${relocationClause}${jobTypeClause}${salaryClause}${remoteClause}. Find 4-6 highly relevant postings. For each, extract the Job Title, Company Name, Location, URL, a brief summary of requirements/description (explicitly highlighting any relocation support or visa sponsorship if applicable), and Source (e.g. LinkedIn, company site).`,
-      config: {
-        systemInstruction: "You are an expert real-time career intelligence agent. Use the Google Search tool to search for real, current, live job listings and extract precise details including company, title, location, description, URL, and source.",
-        tools: [{ googleSearch: {} }]
-      },
-      aiConfig
-    });
-
-    const searchRawText = rawSearchResponse.text || "";
-    console.log(`[Gemini] Retrieved search results. Parsing into structured JSON format...`);
-
-    const response = await generateContentWithRetry({
-      model: model || "gemini-3.5-flash",
-      contents: `Parse the following raw web search job listings into a structured JSON array of jobs conforming to the schema:\n\n${searchRawText}`,
-      config: {
-        responseMimeType: "application/json",
-        responseSchema: {
-          type: Type.OBJECT,
-          properties: {
-            jobs: {
-              type: Type.ARRAY,
-              items: {
-                type: Type.OBJECT,
-                properties: {
-                  title: { type: Type.STRING },
-                  company: { type: Type.STRING },
-                  location: { type: Type.STRING },
-                  url: { type: Type.STRING },
-                  description: { type: Type.STRING },
-                  source: { type: Type.STRING },
-                  relocationOffered: { type: Type.BOOLEAN, description: "True if relocation support, relocation package, or visa sponsorship is mentioned in the posting, otherwise false" },
-                  visaSupport: { type: Type.STRING, description: "Description or specifics of relocation/visa support offered (e.g. 'Visa sponsorship provided', 'Relocation allowance', etc.), or empty string if none" }
-                },
-                required: ["title", "company", "location", "url", "description", "source", "relocationOffered", "visaSupport"]
-              }
-            }
+    // Deep mode: one cheap AI call widens the query into a few adjacent variants
+    // (title synonyms, sibling roles). Purely a query rewrite, never a result.
+    let queries = [searchQueryStr];
+    if (req.body.deepMode) {
+      try {
+        const variantResp = await generateContentWithRetry({
+          model: model || "gemini-3.5-flash",
+          contents:
+            'A job seeker is searching for "' + searchQueryStr + '". Give 4 alternative search phrases that surface adjacent, relevant roles (title synonyms and sibling roles). Output JSON: {"queries": ["a","b","c","d"]}.',
+          config: {
+            responseMimeType: "application/json",
+            responseSchema: {
+              type: Type.OBJECT,
+              properties: { queries: { type: Type.ARRAY, items: { type: Type.STRING } } },
+              required: ["queries"],
+            },
           },
-          required: ["jobs"]
-        },
-        systemInstruction: "You are a precise data parsing agent. Extract the list of job postings from the text and output a strictly valid JSON object conforming to the response schema. If any URLs or details are missing in the input text, construct reasonable, accurate placeholders based on the context. Ensure URLs are real or synthesized accurately."
-      },
-      aiConfig
-    });
-
-    const textOutput = response.text;
-    if (!textOutput) {
-      throw new Error("No output generated from Gemini API");
+          aiConfig,
+        });
+        const parsed = safeJsonParse(variantResp.text);
+        if (Array.isArray(parsed.queries)) {
+          queries = [searchQueryStr, ...parsed.queries.filter((q: any) => typeof q === "string" && q.trim())].slice(0, 5);
+        }
+      } catch (err) {
+        console.warn("[JobSearch] deep-mode query expansion failed, using single query:", err);
+      }
     }
 
-    const data = safeJsonParse(textOutput);
+    const collected: NormalizedJob[] = [];
+    const perSourceTotals: Record<string, number> = {};
+    const sourceErrors: Record<string, string> = {};
+    for (const q of queries) {
+      const r = await fetchFromSources(q, sourceOpts, process.env, req.body.sources);
+      collected.push(...r.jobs);
+      for (const [k, v] of Object.entries(r.perSource)) perSourceTotals[k] = (perSourceTotals[k] || 0) + v;
+      Object.assign(sourceErrors, r.errors);
+    }
+
+    if (wantAiSource) {
+      try {
+        const relocationClause = supportsRelocation
+          ? " that support or offer relocation assistance, visa sponsorship, or relocation packages"
+          : "";
+        const jobTypeClause = jobType && jobType !== "Any" ? " for " + jobType + " positions" : "";
+        const salaryClause =
+          salaryExpectation && salaryExpectation !== "Any" ? " with a salary of at least " + salaryExpectation : "";
+        const remoteClause = remoteStatus && remoteStatus !== "Any" ? " that are " + remoteStatus : "";
+        console.log('[JobSearch] AI web-search source for "' + searchQueryStr + '" in "' + searchLocationStr + '"...');
+        const rawSearchResponse = await generateContentWithRetry({
+          model: model || "gemini-3.5-flash",
+          contents:
+            'Search for active, real job postings matching query "' + searchQueryStr + '" in location "' + searchLocationStr + '"' +
+            relocationClause + jobTypeClause + salaryClause + remoteClause +
+            ". Find 4-6 highly relevant postings. For each, extract Job Title, Company Name, Location, URL, a brief requirements summary (highlight any relocation/visa support), and Source.",
+          config: {
+            systemInstruction:
+              "You are a real-time career intelligence agent. Use web search to find real, current, live job listings and extract company, title, location, description, URL, source.",
+            tools: [{ googleSearch: {} }],
+          },
+          aiConfig,
+        });
+        const structured = await generateContentWithRetry({
+          model: model || "gemini-3.5-flash",
+          contents:
+            "Parse these raw web search job listings into a JSON array conforming to the schema. Do NOT invent listings or URLs - only include jobs actually present in the text.\n\n" +
+            (rawSearchResponse.text || ""),
+          config: {
+            responseMimeType: "application/json",
+            responseSchema: {
+              type: Type.OBJECT,
+              properties: {
+                jobs: {
+                  type: Type.ARRAY,
+                  items: {
+                    type: Type.OBJECT,
+                    properties: {
+                      title: { type: Type.STRING },
+                      company: { type: Type.STRING },
+                      location: { type: Type.STRING },
+                      url: { type: Type.STRING },
+                      description: { type: Type.STRING },
+                      source: { type: Type.STRING },
+                      relocationOffered: { type: Type.BOOLEAN },
+                      visaSupport: { type: Type.STRING },
+                    },
+                    required: ["title", "company", "location", "url", "description", "source", "relocationOffered", "visaSupport"],
+                  },
+                },
+              },
+              required: ["jobs"],
+            },
+            systemInstruction: "Extract only job postings that appear in the input text. Never fabricate a URL or company.",
+          },
+          aiConfig,
+        });
+        const aiJobs = safeJsonParse(structured.text)?.jobs;
+        if (Array.isArray(aiJobs)) {
+          const mapped: NormalizedJob[] = aiJobs
+            .filter((jb: any) => jb && jb.url && /^https?:\/\//i.test(jb.url))
+            .map((jb: any) => ({
+              title: String(jb.title || ""),
+              company: String(jb.company || ""),
+              location: String(jb.location || ""),
+              url: String(jb.url),
+              description: String(jb.description || ""),
+              source: jb.source ? "Web/" + jb.source : "Web search",
+              relocationOffered: Boolean(jb.relocationOffered),
+              visaSupport: String(jb.visaSupport || ""),
+            }));
+          collected.push(...mapped);
+          perSourceTotals["ai"] = mapped.length;
+        }
+      } catch (err) {
+        console.warn("[JobSearch] AI web-search source failed:", err);
+        sourceErrors["ai"] = err instanceof Error ? err.message : String(err);
+      }
+    }
+
+    if (collected.length === 0) {
+      const nothingAvailable = Object.keys(perSourceTotals).length === 0 && !wantAiSource;
+      return res.status(nothingAvailable ? 400 : 200).json({
+        jobs: [],
+        autoQuery: searchQueryStr,
+        autoLocation: searchLocationStr,
+        sourcesUsed: Object.keys(perSourceTotals),
+        perSourceCounts: perSourceTotals,
+        sourceErrors,
+        error:
+          "No job postings found. Add a Gemini API key or Adzuna/Jooble keys, or set a company watchlist, to widen the search.",
+      });
+    }
+
+    let jobs = dedupeJobs(collected);
+    jobs = rankJobs(jobs, useResume && masterResume ? masterResume : undefined);
+
+    const toVerify = jobs.slice(0, 25);
+    await Promise.allSettled(
+      toVerify.map(async (job) => {
+        if (!job.url) return;
+        try {
+          const ctrl = new AbortController();
+          const tm = setTimeout(() => ctrl.abort(), 3500);
+          const r = await fetch(job.url, { method: "HEAD", redirect: "follow", signal: ctrl.signal });
+          clearTimeout(tm);
+          job.verified = r.ok || r.status === 405 || r.status === 403;
+        } catch {
+          job.verified = false;
+        }
+      }),
+    );
+
+    jobs = markTracked(jobs, trackedKeySet(req.body.trackedKeys));
+
     res.json({
-      ...data,
+      jobs,
       autoQuery: searchQueryStr,
-      autoLocation: searchLocationStr
+      autoLocation: searchLocationStr,
+      sourcesUsed: Object.keys(perSourceTotals),
+      perSourceCounts: perSourceTotals,
+      sourceErrors,
+      queriesRun: queries,
     });
 
   } catch (error: any) {
@@ -1820,9 +2094,16 @@ app.post("/api/generate-pdf", expensiveAiLimiter, requireServerKey, validateBody
 
     const page = await browser.newPage();
     await page.setContent(htmlContent, { waitUntil: 'networkidle0' as any });
+    // networkidle0 means the webfont REQUESTS finished, not that the faces are
+    // applied. Without this the first render can fall back to a system font and
+    // reflow the whole document -- different line breaks, different page count.
+    await page.evaluate(() => (document as any).fonts?.ready);
     const pdfBuffer = await page.pdf({
       format: 'A4',
       printBackground: true,
+      // Puppeteer defaults every margin to zero, so the resume printed flush to
+      // the paper edge and the first/last characters of each line were clipped.
+      margin: { top: '14mm', right: '14mm', bottom: '14mm', left: '14mm' },
     });
     await browser.close();
     
@@ -2111,18 +2392,187 @@ Always output valid JSON in the exact schema specified.`;
 // ==========================================
 
 // 1. Get Authorization URL (handles both sandbox and real LinkedIn OAuth flow)
+// ---------------------------------------------------------------------------
+// Claude Code CLI account management.
+//
+// The claude-cli provider borrows the Claude subscription logged into the
+// `claude` binary on THIS machine. When that login expires the app previously
+// just failed with an opaque CLI exit code, and the only cure was for the
+// developer to remember to run `claude auth login` in a terminal. These two
+// routes surface that state in the UI and let them start the login from there.
+//
+// Both are local-development tools: they spawn processes and open a terminal
+// window on the host, so they are gated on the same ENABLE_CLAUDE_CLI_PROVIDER
+// flag as the provider itself AND refuse any non-loopback caller. No Anthropic
+// credential ever passes through this app -- the CLI owns its own OAuth flow,
+// which the developer completes in their own browser.
+// ---------------------------------------------------------------------------
+
+function claudeCliRoutesGuard(req: Request, res: Response): boolean {
+  if (process.env.ENABLE_CLAUDE_CLI_PROVIDER !== "true") {
+    res.status(404).json({
+      error: "The Claude Code CLI provider is disabled. Set ENABLE_CLAUDE_CLI_PROVIDER=true in your local .env.",
+      code: "CLAUDE_CLI_DISABLED",
+      statusCode: 404,
+    });
+    return false;
+  }
+  // Spawning processes/terminals is only ever appropriate for the developer
+  // sitting at this machine, never for a remote caller.
+  const ip = req.ip || "";
+  const isLoopback = ip === "::1" || ip === "127.0.0.1" || ip === "::ffff:127.0.0.1";
+  if (!isLoopback) {
+    res.status(403).json({
+      error: "Claude Code CLI management is only available from localhost.",
+      code: "CLAUDE_CLI_LOCAL_ONLY",
+      statusCode: 403,
+    });
+    return false;
+  }
+  return true;
+}
+
+function runClaudeCli(args: string[], timeoutMs: number, input?: string): Promise<{ code: number | null; stdout: string; stderr: string; spawnError?: string }> {
+  return new Promise((resolve) => {
+    const child = spawn("claude", args, { stdio: [input === undefined ? "ignore" : "pipe", "pipe", "pipe"], env: claudeCliEnv() });
+    let stdout = "";
+    let stderr = "";
+    let settled = false;
+    const finish = (r: { code: number | null; stdout: string; stderr: string; spawnError?: string }) => {
+      if (settled) return;
+      settled = true;
+      resolve(r);
+    };
+    const timer = setTimeout(() => {
+      child.kill();
+      finish({ code: null, stdout, stderr, spawnError: `Timed out after ${timeoutMs}ms` });
+    }, timeoutMs);
+    child.stdout?.on("data", (d) => { stdout += d.toString(); });
+    child.stderr?.on("data", (d) => { stderr += d.toString(); });
+    child.on("error", (err) => { clearTimeout(timer); finish({ code: null, stdout, stderr, spawnError: err.message }); });
+    child.on("close", (code) => { clearTimeout(timer); finish({ code, stdout, stderr }); });
+    if (input !== undefined && child.stdin) {
+      child.stdin.write(input);
+      child.stdin.end();
+    }
+  });
+}
+
+// `claude auth status` reports whether credentials EXIST, not whether they still
+// work -- an expired-and-unrefreshable session still says loggedIn:true. So the
+// only trustworthy health signal is a real (tiny) round trip.
+app.get("/api/claude-cli/status", async (req, res) => {
+  if (!claudeCliRoutesGuard(req, res)) return;
+
+  const status = await runClaudeCli(["auth", "status", "--json"], 15000);
+
+  if (status.spawnError && status.code === null && /ENOENT/i.test(status.spawnError)) {
+    return res.json({
+      installed: false,
+      loggedIn: false,
+      healthy: false,
+      reason: 'The `claude` command was not found on this machine\u2019s PATH.',
+    });
+  }
+
+  let parsed: any;
+  try {
+    parsed = status.stdout.trim() ? JSON.parse(status.stdout) : null;
+  } catch {
+    parsed = null;
+  }
+
+  if (!parsed) {
+    return res.json({
+      installed: true,
+      loggedIn: false,
+      healthy: false,
+      reason: status.spawnError || status.stderr.trim() || "Could not read Claude Code CLI auth status.",
+    });
+  }
+
+  if (!parsed.loggedIn) {
+    return res.json({
+      installed: true,
+      loggedIn: false,
+      healthy: false,
+      reason: "No Claude Code CLI session. Sign in to use this provider.",
+    });
+  }
+
+  // Credentials exist -- now prove they still work.
+  // The prompt goes on stdin, not as a positional arg: `--tools <tools...>` is
+  // variadic and would swallow a trailing prompt argument.
+  const probe = await runClaudeCli(["-p", "--output-format", "json", "--tools", ""], 60000, "hi");
+  let probeEnvelope: any;
+  try {
+    probeEnvelope = probe.stdout.trim() ? JSON.parse(probe.stdout) : null;
+  } catch {
+    probeEnvelope = null;
+  }
+
+  const probeFailed = Boolean(probe.spawnError) || probe.code !== 0 || !probeEnvelope || probeEnvelope.is_error;
+  const probeDetail = (probeEnvelope && probeEnvelope.result) || probe.spawnError || probe.stderr.trim() || "";
+
+  return res.json({
+    installed: true,
+    loggedIn: true,
+    healthy: !probeFailed,
+    email: parsed.email || null,
+    subscriptionType: parsed.subscriptionType || null,
+    authMethod: parsed.authMethod || null,
+    reason: probeFailed
+      ? (probeDetail || `The CLI session is signed in but a test request failed (exit ${probe.code}).`)
+      : null,
+  });
+});
+
+// Starts `claude auth login` in a NEW terminal window. The CLI drives an
+// interactive browser OAuth flow and expects a real TTY, which a piped child
+// process does not provide -- so hand it its own console and let the developer
+// finish in their browser. The app never sees the credentials.
+app.post("/api/claude-cli/login", (req, res) => {
+  if (!claudeCliRoutesGuard(req, res)) return;
+
+  const manualCommand = "claude auth login";
+
+  try {
+    if (process.platform === "win32") {
+      // `start` is a cmd builtin, so it needs cmd itself. The empty "" is the
+      // window title -- without it, a quoted command is treated as the title.
+      spawn("cmd", ["/c", "start", "\"Claude Code login\"", "cmd", "/k", "claude", "auth", "login"], {
+        detached: true,
+        stdio: "ignore",
+        env: claudeCliEnv(),
+      }).unref();
+    } else if (process.platform === "darwin") {
+      spawn("open", ["-a", "Terminal", "claude"], { detached: true, stdio: "ignore", env: claudeCliEnv() }).unref();
+    } else {
+      const terminal = process.env.TERMINAL || "x-terminal-emulator";
+      spawn(terminal, ["-e", "claude auth login"], { detached: true, stdio: "ignore", env: claudeCliEnv() }).unref();
+    }
+    return res.json({ launched: true, manualCommand });
+  } catch (err: any) {
+    return res.json({
+      launched: false,
+      manualCommand,
+      error: err?.message || "Could not open a terminal window automatically.",
+    });
+  }
+});
+
 app.get('/api/auth/linkedin/url', (req, res) => {
   // Use custom or default redirect URI
   const appUrl = process.env.APP_URL || `${req.protocol}://${req.get('host')}`;
   const redirectUri = `${appUrl.replace(/\/$/, '')}/api/auth/linkedin/callback`;
   const clientId = req.query.client_id ? String(req.query.client_id).trim() : (process.env.LINKEDIN_CLIENT_ID || '');
-  const clientSecret = req.query.client_secret ? String(req.query.client_secret).trim() : (process.env.LINKEDIN_CLIENT_SECRET || '');
 
-  // Package client_id and client_secret in state parameter to retrieve upon callback redirect
+  // The client_id is public; the secret is NOT and must never transit the
+  // browser. It is read only from the server environment at callback time.
+  // State carries a random nonce (CSRF) plus the non-secret client_id.
   const stateObj = {
-    csrf: 'linkedin_state_ats_tailor',
+    nonce: crypto.randomUUID(),
     client_id: clientId,
-    client_secret: clientSecret
   };
   const stateStr = Buffer.from(JSON.stringify(stateObj)).toString('base64');
 
@@ -2133,7 +2583,7 @@ app.get('/api/auth/linkedin/url', (req, res) => {
       client_id: clientId,
       redirect_uri: redirectUri,
       state: stateStr,
-      scope: 'w_member_social r_liteprofile', // standard permissions
+      scope: 'openid profile email', // OpenID Connect — matches the /v2/userinfo call in the callback
     });
     res.json({
       url: `https://www.linkedin.com/oauth/v2/authorization?${params.toString()}`,
@@ -2378,16 +2828,16 @@ app.get(['/api/auth/linkedin/callback', '/api/auth/linkedin/callback/'], async (
 
   // 2. Real OAuth Flow Exchange
   let clientId = process.env.LINKEDIN_CLIENT_ID || '';
-  let clientSecret = process.env.LINKEDIN_CLIENT_SECRET || '';
+  const clientSecret = process.env.LINKEDIN_CLIENT_SECRET || '';
 
+  // Only the non-secret client_id may come from state. The secret is taken
+  // exclusively from the server environment — a browser-supplied secret is
+  // rejected by omission.
   if (state) {
     try {
       const decodedState = JSON.parse(Buffer.from(String(state), 'base64').toString('utf-8'));
       if (decodedState.client_id) {
         clientId = decodedState.client_id;
-      }
-      if (decodedState.client_secret) {
-        clientSecret = decodedState.client_secret;
       }
     } catch (e) {
       console.error("Failed to decode LinkedIn state parameter:", e);
@@ -2398,7 +2848,7 @@ app.get(['/api/auth/linkedin/callback', '/api/auth/linkedin/callback/'], async (
   const redirectUri = `${appUrl.replace(/\/$/, '')}/api/auth/linkedin/callback`;
 
   if (!clientId || !clientSecret) {
-    res.status(400).send("LinkedIn client credentials are not defined. Please configure them in the Outreach Suite panel or env variables.");
+    res.status(400).send("LinkedIn real OAuth requires LINKEDIN_CLIENT_ID and LINKEDIN_CLIENT_SECRET to be set as server environment variables.");
     return;
   }
 
