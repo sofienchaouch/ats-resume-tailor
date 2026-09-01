@@ -4,5 +4,20 @@ dist/
 coverage/
 .DS_Store
 *.log
+
+# env / secrets
 .env*
 !.env.example
+
+# editors / tooling
+.vscode/
+.idea/
+*.tsbuildinfo
+*.local
+
+# Claude Code session artifacts
+.claude/worktrees/
+.claude/settings.local.json
+
+# AI Studio local cache
+assets/.aistudio/

@@ -1,7 +1,9 @@
 {
-  "name": "react-example",
+  "name": "ats-resume-tailor",
   "private": true,
   "version": "0.0.0",
+  "description": "AI-powered resume & cover-letter tailoring with ATS scoring, multi-source job search, and application tracking",
+  "license": "MIT",
   "type": "module",
   "scripts": {
     "dev": "tsx server.ts",
