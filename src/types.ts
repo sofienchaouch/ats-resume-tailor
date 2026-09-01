@@ -109,10 +109,20 @@ export interface CoverLetterData {
   senderName: string;
 }
 
+export type AiProviderId = 'gemini' | 'openai' | 'custom' | 'openrouter' | 'claude-cli';
+
+/**
+ * Coarse task buckets the user can pin to a specific provider in AI Settings.
+ * Web-grounded tasks (job search, URL fetch) are always Gemini and ignore this.
+ */
+export type AiTaskBucket = 'resumeWriting' | 'coverLetter' | 'interviewPrep' | 'analysis' | 'parsing';
+
 export interface AiConfig {
-  provider: 'gemini' | 'openai' | 'custom' | 'openrouter' | 'claude-cli';
+  provider: AiProviderId;
   apiKey: string;
   model: string;
   customEndpoint?: string;
+  /** Optional per-task provider pins. Absent/‘default’ => use `provider`. */
+  taskOverrides?: Partial<Record<AiTaskBucket, AiProviderId>>;
 }
 

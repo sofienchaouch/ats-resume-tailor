@@ -61,12 +61,17 @@ const resumeDataSchema = z.object({
   languages: z.array(z.string().max(MAX_SHORT)).max(50).optional(),
 });
 
+const providerEnum = z.enum(["gemini", "openai", "custom", "openrouter", "claude-cli"]);
+const taskBucketEnum = z.enum(["resumeWriting", "coverLetter", "interviewPrep", "analysis", "parsing"]);
+
 const aiConfigSchema = z
   .object({
-    provider: z.enum(["gemini", "openai", "custom", "openrouter", "claude-cli"]).optional(),
+    provider: providerEnum.optional(),
     apiKey: z.string().max(500).optional(),
     model: z.string().max(200).optional(),
     customEndpoint: z.string().max(500).optional(),
+    taskOverrides: z.partialRecord(taskBucketEnum, providerEnum).optional(),
+    taskBucket: taskBucketEnum.optional(),
   })
   .optional();
 
@@ -133,6 +138,14 @@ export const jobsDeepSearchSchema = z.object({
   remoteStatus: z.string().max(100).optional(),
   model: modelField,
   aiConfig: aiConfigSchema,
+  /** subset of source ids to run: "arbeitnow" | "adzuna" | "jooble" | "watchlist" | "ai" */
+  sources: z.array(z.string().max(40)).max(10).optional(),
+  /** ATS board slugs, e.g. "greenhouse:adyen" */
+  watchlist: z.array(z.string().max(120)).max(20).optional(),
+  /** widen the search with AI-generated query variants */
+  deepMode: z.boolean().optional(),
+  /** "Company::Title" pairs from the user's tracker, for the already-applied flag */
+  trackedKeys: z.array(z.string().max(300)).max(500).optional(),
 });
 
 export const improveBulletSchema = z.object({

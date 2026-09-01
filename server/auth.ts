@@ -42,7 +42,14 @@ export function requireServerKey(req: Request, res: Response, next: NextFunction
   // claude-cli authenticates via a local CLI session, not a key or Firebase
   // sign-in — its own ENABLE_CLAUDE_CLI_PROVIDER check (server.ts) is the real
   // gate. Without this exemption a guest picking it would 401 here first.
-  const isLocalCliProvider = req.body?.aiConfig?.provider === "claude-cli";
+  // A per-task override (aiConfig.taskOverrides[taskBucket], set for this route
+  // by the middleware in server.ts) can also select claude-cli even when the
+  // global provider is something else, so honour that here too.
+  const ai = req.body?.aiConfig;
+  const bucket = ai?.taskBucket;
+  const effectiveProvider =
+    (bucket && ai?.taskOverrides && ai.taskOverrides[bucket]) || ai?.provider;
+  const isLocalCliProvider = effectiveProvider === "claude-cli";
   if (!req.user && !hasOwnKey && !isLocalCliProvider) {
     return res.status(401).json({
       error: "Sign in or provide your own AI API key in Settings to use this feature.",
