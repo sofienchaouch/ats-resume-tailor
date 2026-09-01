@@ -179,7 +179,7 @@ function classifyImportance(frequency: number): KeywordMatch["importance"] {
   return "low";
 }
 
-function resumeToSearchableText(resume: ResumeData): string {
+export function resumeToSearchableText(resume: ResumeData): string {
   const parts: string[] = [
     resume.contact?.title || "",
     resume.summary || "",
@@ -228,7 +228,7 @@ const IMPORTANCE_WEIGHT: Record<KeywordMatch["importance"], number> = {
   low: 1,
 };
 
-function keywordCoverageScore(keywords: KeywordMatch[], field: "matchesInMaster" | "matchesInTailored"): number {
+export function keywordCoverageScore(keywords: KeywordMatch[], field: "matchesInMaster" | "matchesInTailored"): number {
   if (keywords.length === 0) return 100;
   let earned = 0;
   let possible = 0;
