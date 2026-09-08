@@ -6,6 +6,7 @@ import { useToast } from './Toast';
 import { apiFetch, apiFetchBlob } from '../utils/apiClient';
 import { estimateResumeLength } from '../utils/pageEstimate';
 import { resumeToMarkdown, downloadMarkdown, toMarkdownFileName } from '../utils/obsidianSync';
+import { buildResumeFileBase } from '../utils/resumeFileName';
 
 /**
  * Serialize every same-origin stylesheet the app has loaded into one CSS string.
@@ -36,15 +37,28 @@ interface ResumePreviewProps {
   onUpdate: (updated: ResumeData) => void;
   aiConfig?: any;
   selectedModel?: string;
+  /** Target job the resume was tailored for — used to name exported files. */
+  targetTitle?: string;
+  targetCompany?: string;
 }
 
-export default function ResumePreview({ 
-  resumeData, 
-  keywords = [], 
+export default function ResumePreview({
+  resumeData,
+  keywords = [],
   onUpdate,
   aiConfig,
-  selectedModel
+  selectedModel,
+  targetTitle,
+  targetCompany
 }: ResumePreviewProps) {
+  // Exported-file base name: "{name} - resume {role} {company}" — shared with the
+  // tailor queue's bulk export (src/utils/resumeFileName.ts).
+  const exportFileBase = (): string =>
+    buildResumeFileBase({
+      name: resumeData.contact.name,
+      role: targetTitle || resumeData.contact.title,
+      company: targetCompany,
+    });
   const { showError, showSuccess, showToast } = useToast();
   const [isEditing, setIsEditing] = useState(false);
   const [highlightKeywords, setHighlightKeywords] = useState(true);
@@ -619,7 +633,7 @@ export default function ResumePreview({
 
   const handleExportMarkdown = () => {
     const md = resumeToMarkdown(resumeData);
-    downloadMarkdown(toMarkdownFileName(`${resumeData.contact.name || 'resume'} resume`), md);
+    downloadMarkdown(toMarkdownFileName(exportFileBase()), md);
   };
 
   const handleExportDoc = async () => {
@@ -1038,7 +1052,7 @@ export default function ResumePreview({
       const url = URL.createObjectURL(blob);
       const a = document.createElement('a');
       a.href = url;
-      a.download = `${resumeData.contact.name.replace(/\s+/g, '_')}_Tailored_Resume.docx`;
+      a.download = `${exportFileBase()}.docx`;
       document.body.appendChild(a);
       a.click();
       document.body.removeChild(a);
@@ -1131,7 +1145,7 @@ export default function ResumePreview({
       const url = URL.createObjectURL(blob);
       const a = document.createElement('a');
       a.href = url;
-      a.download = `${resumeData.contact.name.replace(/\s+/g, '_')}_Tailored_Resume.pdf`;
+      a.download = `${exportFileBase()}.pdf`;
       document.body.appendChild(a);
       a.click();
       document.body.removeChild(a);

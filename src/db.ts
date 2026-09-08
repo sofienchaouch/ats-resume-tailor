@@ -78,6 +78,28 @@ export interface ResumeVersionMeta {
   updatedAt: number;
 }
 
+// How many tailoring runs to keep. syncSubcollection deletes any history doc
+// not present in the array it is handed, so anything trimmed past this point
+// is gone permanently -- keep it generous. Each entry is a single small
+// document (a TailorResponse, tens of KB), nowhere near Firestore's limits.
+export const HISTORY_LIMIT = 100;
+
+/**
+ * History entry ids are `Date.now()` (optionally suffixed `_<i>` for batch
+ * runs), so their numeric prefix is a reliable recency key. Firestore returns
+ * a collection ordered lexicographically by document id, which for equal-length
+ * epoch strings means oldest-first -- the opposite of the order the UI shows.
+ * Sort explicitly rather than depending on either.
+ */
+function historyRecency(item: { id?: string | number } | null | undefined): number {
+  const parsed = parseInt(String(item?.id ?? ''), 10);
+  return Number.isNaN(parsed) ? 0 : parsed;
+}
+
+export function sortHistoryNewestFirst<T extends { id?: string | number }>(items: T[]): T[] {
+  return [...items].sort((a, b) => historyRecency(b) - historyRecency(a));
+}
+
 /**
  * Upserts `items` (each needs a stable `id`) into users/{userId}/{subcollection}
  * as one document per item, and deletes any existing docs there that are no
@@ -246,7 +268,7 @@ export const getHistory = async (userId: string): Promise<any[] | null> => {
   const path = `users/${userId}/history`;
   try {
     const snap = await getDocs(collection(db, 'users', userId, 'history'));
-    return snap.docs.map((d) => d.data());
+    return sortHistoryNewestFirst(snap.docs.map((d) => d.data() as { id?: string }));
   } catch (error) {
     handleFirestoreError(error, OperationType.GET, path);
     return null;
@@ -334,5 +356,80 @@ export const getAiConfig = async (userId: string): Promise<any | null> => {
   } catch (error) {
     handleFirestoreError(error, OperationType.GET, path);
     return null;
+  }
+};
+
+// ---------------------------------------------------------------------------
+// Guest -> account import
+// ---------------------------------------------------------------------------
+
+export interface GuestSnapshot {
+  /** Guest primary resume, from localDb key `ats_master_resume`. */
+  masterResume: ResumeData | null;
+  /** Extra named guest versions (never includes the primary version). */
+  versions: { id: string; name: string; updatedAt: number; data: ResumeData }[];
+  /** Guest tailoring history, from localDb key `ats_tailored_history`. */
+  history: { id: string }[];
+}
+
+export interface GuestImportResult {
+  importedResume: boolean;
+  importedVersions: number;
+  importedHistory: number;
+}
+
+/**
+ * Copies work done while signed out into the account that just signed in.
+ *
+ * Additive only, and never destructive: the primary resume is written solely
+ * when the account has none (so an established account is never overwritten by
+ * whatever happened to be in this browser), and history entries are merged by
+ * id so re-running the import cannot duplicate anything. Extra named versions
+ * are given fresh ids, since guest ids are generated locally and could collide
+ * with a version the account already has.
+ *
+ * Callers should clear the guest keys once this resolves, so the same data
+ * isn't offered for import again on the next sign-in.
+ */
+export const importGuestData = async (
+  userId: string,
+  snapshot: GuestSnapshot
+): Promise<GuestImportResult> => {
+  const path = `users/${userId}`;
+  const result: GuestImportResult = { importedResume: false, importedVersions: 0, importedHistory: 0 };
+  try {
+    if (snapshot.masterResume) {
+      const existingPrimary = await getDoc(doc(db, 'users', userId, 'resumes', PRIMARY_RESUME_ID));
+      if (!existingPrimary.exists() || !existingPrimary.data()?.data) {
+        await saveResumeVersion(userId, PRIMARY_RESUME_ID, snapshot.masterResume, 'Master Resume');
+        result.importedResume = true;
+      }
+    }
+
+    for (const version of snapshot.versions) {
+      if (!version?.data) continue;
+      const newId = 'ver_' + Date.now().toString(36) + Math.random().toString(36).slice(2, 8);
+      await saveResumeVersion(userId, newId, version.data, version.name || 'Imported Resume');
+      result.importedVersions += 1;
+    }
+
+    if (snapshot.history.length > 0) {
+      const existingHistory = (await getHistory(userId)) || [];
+      const existingIds = new Set(existingHistory.map((item: any) => String(item?.id)));
+      const incoming = snapshot.history.filter((item) => item?.id && !existingIds.has(String(item.id)));
+      if (incoming.length > 0) {
+        const merged = sortHistoryNewestFirst([...incoming, ...existingHistory] as { id: string }[]).slice(
+          0,
+          HISTORY_LIMIT
+        );
+        await saveHistory(userId, merged as any);
+        result.importedHistory = incoming.length;
+      }
+    }
+
+    return result;
+  } catch (error) {
+    handleFirestoreError(error, OperationType.WRITE, path);
+    return result;
   }
 };

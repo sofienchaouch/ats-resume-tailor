@@ -1,4 +1,5 @@
 import { auth } from '../firebase';
+import type { RateLimitSnapshot } from './rateBudget';
 
 export interface ApiErrorShape {
   error: string;
@@ -23,10 +24,44 @@ export interface ApiFetchOptions {
   apiKey?: string;
   method?: 'GET' | 'POST';
   signal?: AbortSignal;
+  /**
+   * Called with the server's rate-limit headers when they are present on the
+   * response (both 2xx and 429). Lets the tailor queue track the real budget
+   * instead of guessing. Never fires for BYO-key users — the server skips the
+   * limiter and emits no headers.
+   */
+  onRateLimitInfo?: (snapshot: RateLimitSnapshot) => void;
 }
 
 export function isAbortError(err: unknown): boolean {
   return err instanceof DOMException && err.name === 'AbortError';
+}
+
+/**
+ * Parses express-rate-limit's `RateLimit-*` draft headers. `RateLimit-Reset` is
+ * delta-seconds until the window resets, converted here to an absolute epoch-ms.
+ * Returns all-null when the headers are absent.
+ */
+export function readRateLimitHeaders(headers: Headers, now: number = Date.now()): RateLimitSnapshot {
+  const num = (raw: string | null): number | null => {
+    if (raw === null) return null;
+    const trimmed = raw.trim();
+    if (trimmed === '') return null;
+    const n = Number(trimmed);
+    return Number.isFinite(n) ? n : null;
+  };
+  const resetSeconds = num(headers.get('ratelimit-reset'));
+  return {
+    limit: num(headers.get('ratelimit-limit')),
+    remaining: num(headers.get('ratelimit-remaining')),
+    resetAtMs: resetSeconds !== null ? now + resetSeconds * 1000 : null,
+  };
+}
+
+function reportRateLimit(response: Response, options: ApiFetchOptions): void {
+  if (!options.onRateLimitInfo) return;
+  if (!response.headers.has('ratelimit-limit') && !response.headers.has('ratelimit-remaining')) return;
+  options.onRateLimitInfo(readRateLimitHeaders(response.headers));
 }
 
 async function buildHeaders(body: unknown, options: ApiFetchOptions): Promise<Record<string, string>> {
@@ -87,6 +122,7 @@ export async function apiFetch<T = any>(
   options: ApiFetchOptions = {}
 ): Promise<T> {
   const response = await doFetch(path, body, options);
+  reportRateLimit(response, options);
 
   let data: any = null;
   try {
@@ -116,6 +152,7 @@ export async function apiFetchBlob(
   options: ApiFetchOptions = {}
 ): Promise<Blob> {
   const response = await doFetch(path, body, options);
+  reportRateLimit(response, options);
 
   if (!response.ok) {
     let data: any = null;

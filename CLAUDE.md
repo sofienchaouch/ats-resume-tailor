@@ -31,7 +31,7 @@ src/
   utils/spellcheck.ts    # spellcheck field logic
   utils/obsidianSync.ts  # ORPHANED — formatters written, no importer, no /api/obsidian/sync route
   types.ts               # ResumeData, CoverLetterData, etc.
-  data/samples.ts
+  data/emptyResume.ts   # blank ResumeData used as initial workspace state
 server.ts                 # Express API (Gemini calls, PDF generation, auth-gated routes)
 generate-pdf.ts           # standalone PDF generation script
 ```
@@ -59,6 +59,23 @@ Only Gemini has `webGrounding`: the other adapters ignore `config.tools` entirel
 `generateContentWithRetry` (server.ts) is a thin wrapper over `runProvider`: `buildProviderChain` (server/capabilities.ts) returns an ordered `[selected, ...fallbacks]` list — Gemini and/or claude-cli, whichever is actually available and capability-compatible — and the wrapper advances to the next entry on any `isProviderLevelFailure` (bad key, quota, CLI auth). Grounding/multimodal calls drop incompatible providers from the chain rather than degrade.
 
 Per-task provider pins: `AiConfig.taskOverrides` (`src/types.ts`) maps a coarse bucket → provider. A middleware in server.ts tags each AI request with its bucket from `req.path` (`PATH_TASK_BUCKET`); `buildProviderChain` makes the pinned provider the chain head when it's usable for that call. `server/auth.ts` `requireServerKey` also resolves the override so a task pinned to `claude-cli` isn't 401'd when the global provider needs a key.
+
+## Persistence
+
+Two backends, same shape. Signed-in users write Firestore (`src/db.ts`, schema v2, one document per item via `syncSubcollection`); guests write IndexedDB (`src/utils/localDb.ts`), with named resume versions in `src/utils/guestVersions.ts` mirroring the Firestore version API so `App.tsx` can just branch on `user`.
+
+- Resumes: `users/{uid}/resumes/{resumeId}`; guest equivalents are `ats_master_resume` (primary) + `ats_guest_resume_v_<id>`, indexed by `ats_guest_resume_versions`. Do NOT reuse the `ats_resume_versions` localStorage key — that belongs to the unrelated manual-snapshot feature in `MasterResumeWizard`/`ResumePreview`.
+- History: `users/{uid}/history/{id}`, capped at `HISTORY_LIMIT` (100). The cap is destructive — `syncSubcollection` deletes any doc missing from the array it is handed. Entry ids are `Date.now()`, so `sortHistoryNewestFirst` is what establishes order; Firestore returns docs id-lexicographic, i.e. oldest-first.
+- Cover letters live on their history entry (`HistoryEntry.coverLetter`), written through `activeHistoryId`. `ats_last_session` in localDb is per-browser reload scratch only — never the source of truth.
+- `importGuestData(uid, snapshot)` folds guest work into an account at sign-in. Additive only: primary resume is written solely when the account has none, history merges by id, imported named versions get fresh ids. Guest keys are cleared afterwards via `clearGuestResumeData()`.
+
+## Docker
+
+`Dockerfile` (multi-stage) + `docker-compose.yml`. Runtime image installs Debian `chromium` so `findLocalChromeOrEdgePath()` in `server.ts` finds `/usr/bin/chromium` and the `@sparticuz/chromium` fallback never runs. Runs as `node` (non-root) under `dumb-init`; `shm_size: 512m` in compose because headless Chromium blows through the default 64MB `/dev/shm` on larger resumes. Container listens on `$PORT` (8080); `.env` is injected at run time and never copied into the image.
+
+```bash
+docker compose up --build       # http://localhost:3000
+```
 
 ## Architecture rules
 
