@@ -1,0 +1,26 @@
+services:
+  app:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    image: ats-resume-tailor
+    ports:
+      - "${HOST_PORT:-3000}:8080"
+    environment:
+      NODE_ENV: production
+      PORT: 8080
+      # Hard override of whatever the host .env says. The `claude` binary does
+      # not exist in this image (and routing other people's requests through a
+      # personal Claude subscription would breach Anthropic's ToS), so leaving
+      # these inherited turns every pinned AI call into `spawn claude ENOENT`.
+      # `environment` takes precedence over `env_file`.
+      ENABLE_CLAUDE_CLI_PROVIDER: "false"
+      ENABLE_CLAUDE_CLI_WEB_SEARCH: "false"
+    # Secrets stay in .env on the host and are injected at run time -- they are
+    # never copied into the image (see .dockerignore).
+    env_file:
+      - .env
+    restart: unless-stopped
+    # Headless Chromium exhausts the default 64MB /dev/shm and dies mid-render on
+    # larger resumes. Raising it beats running with --disable-dev-shm-usage.
+    shm_size: "512m"

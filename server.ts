@@ -16,7 +16,7 @@ import type { ZodType } from "zod";
 import * as schemas from "./server/schemas";
 import { fetchFromSources, listSources, type SourceOpts } from "./server/jobSources";
 import { rankJobs, dedupeJobs, markTracked, trackedKeySet, type NormalizedJob } from "./server/jobRank";
-import { providerCapabilities, buildProviderChain, isProviderLevelFailure, type ProviderId } from "./server/capabilities";
+import { providerCapabilities, buildProviderChain, isProviderLevelFailure, hasServerGeminiKey, type ProviderId } from "./server/capabilities";
 import { computeTailorScoring } from "./server/scoring";
 import { detectFabrications } from "./server/fabricationGuard";
 import { attachUser, requireServerKey } from "./server/auth";
@@ -24,13 +24,20 @@ import { attachUser, requireServerKey } from "./server/auth";
 dotenv.config();
 
 const app = express();
-const PORT = 3000;
+// Container platforms (Docker, Cloud Run, Railway) assign the port via $PORT
+// rather than letting the process pick one. Default stays 3000 for local dev.
+const PORT = Number(process.env.PORT) || 3000;
 
 app.get('/health', (req, res) => {
   res.json({
     status: 'ok',
     uptime: process.uptime(),
-    geminiConfigured: Boolean(process.env.GEMINI_API_KEY),
+    // Boolean(GEMINI_API_KEY) reported "configured" for the placeholder value
+    // .env.example ships with, so a never-filled-in key looked healthy right up
+    // until the first AI call failed. hasServerGeminiKey applies the same
+    // placeholder check the provider router already uses.
+    geminiConfigured: hasServerGeminiKey(),
+    claudeCliProvider: process.env.ENABLE_CLAUDE_CLI_PROVIDER === "true",
   });
 });
 

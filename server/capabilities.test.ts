@@ -205,3 +205,35 @@ describe("claude-cli web search opt-in", () => {
     expect(chain).toEqual([]);
   });
 });
+
+describe("claude-cli availability", () => {
+  const CLI_OFF = { GEMINI_API_KEY: "AIzaReal000", ENABLE_CLAUDE_CLI_PROVIDER: "false" } as NodeJS.ProcessEnv;
+
+  it("does not make a globally-selected claude-cli the chain head when the CLI is disabled", () => {
+    const chain = buildProviderChain({ aiConfig: { provider: "claude-cli" } } as any, CLI_OFF);
+    expect(chain[0].provider).toBe("gemini");
+    expect(chain.some((c) => c.provider === "claude-cli")).toBe(false);
+  });
+
+  it("still honours a globally-selected claude-cli when the CLI is enabled", () => {
+    const chain = buildProviderChain(
+      { aiConfig: { provider: "claude-cli" } } as any,
+      { GEMINI_API_KEY: "AIzaReal000", ENABLE_CLAUDE_CLI_PROVIDER: "true" } as NodeJS.ProcessEnv,
+    );
+    expect(chain[0].provider).toBe("claude-cli");
+  });
+
+  it("classifies a missing `claude` binary as provider-level so the chain falls through", () => {
+    const enoent = new Error('Failed to launch the Claude Code CLI: spawn claude ENOENT. Is "claude" installed and on PATH?');
+    expect(isProviderLevelFailure(enoent)).toBe(true);
+  });
+
+  it("classifies the local-development-only guard as provider-level", () => {
+    const disabled = new Error("The Claude Code CLI provider is local-development-only and is disabled.");
+    expect(isProviderLevelFailure(disabled)).toBe(true);
+  });
+
+  it("still treats an ordinary request error as request-level", () => {
+    expect(isProviderLevelFailure(new Error("resume text was empty"))).toBe(false);
+  });
+});

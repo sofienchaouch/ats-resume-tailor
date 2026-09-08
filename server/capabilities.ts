@@ -155,8 +155,14 @@ export function buildProviderChain(
   const effectiveSelected = (pinnedOk ? pinned : selected) as ProviderId;
   const effectiveKey = effectiveSelected === selected ? selectedKey : undefined;
 
+  // A globally-selected claude-cli was previously trusted without checking the
+  // enable flag (only per-task pins were checked), so a stale "claude-cli"
+  // selection became the chain head even where the CLI cannot run -- e.g. in a
+  // container that inherited a local .env. Treat a disabled CLI the same way a
+  // keyless provider is treated: fall back to Gemini.
+  const cliUnavailable = effectiveSelected === "claude-cli" && env.ENABLE_CLAUDE_CLI_PROVIDER !== "true";
   const head: ProviderId =
-    effectiveSelected !== "gemini" && effectiveSelected !== "claude-cli" && !effectiveKey
+    cliUnavailable || (effectiveSelected !== "gemini" && effectiveSelected !== "claude-cli" && !effectiveKey)
       ? "gemini"
       : effectiveSelected;
 
@@ -184,5 +190,11 @@ export function isProviderLevelFailure(err: any): boolean {
   return [
     "api key", "api_key_invalid", "unauthor", "quota", "billing", "exhausted",
     "rate limit", "429", "oauth", "expired", "credential", "exited with code",
+    // A missing `claude` binary (ENOENT) is a property of this environment, not
+    // of the request -- it happens whenever ENABLE_CLAUDE_CLI_PROVIDER is left
+    // true somewhere the CLI isn't installed, e.g. a container inheriting a
+    // local .env. Treat it as provider-level so the chain falls through to
+    // Gemini instead of failing the user's request outright.
+    "enoent", "failed to launch the claude code cli", "local-development-only",
   ].some((needle) => msg.includes(needle));
 }
