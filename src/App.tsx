@@ -33,11 +33,25 @@ import {
   Trello,
   Settings
 } from 'lucide-react';
-import { sampleResumes } from './data/samples';
-import { ResumeData, TailorResponse, CoverLetterData, AiConfig } from './types';
+import { emptyResume } from './data/emptyResume';
+import { ResumeData, TailorResponse, CoverLetterData, AiConfig, HistoryEntry, JobSearchResult } from './types';
 import { useAuth } from './AuthContext';
-import { getMasterResume, saveMasterResume, getHistory, saveHistory, getJobApplications, saveJobApplications, getAiConfig, saveAiConfig, migrateToSubcollections, listResumeVersions, saveResumeVersion, getResumeVersion, deleteResumeVersion, renameResumeVersion, PRIMARY_RESUME_ID, ResumeVersionMeta } from './db';
+import { attachJobIds } from './utils/jobKey';
+import { useRegisterTailorQueueConfig, useTailorQueue } from './components/tailorQueue/TailorQueueContext';
+import { TailorQueueNavChip } from './components/tailorQueue/TailorQueueNavChip';
+import { buildHistoryEntry, mergeHistory } from './utils/tailorHistoryEntries';
+import { upsertApplications, findApplicationIndex, type TrackerApplication } from './utils/trackerEntries';
+import { getMasterResume, saveMasterResume, getHistory, saveHistory, getJobApplications, saveJobApplications, getAiConfig, saveAiConfig, migrateToSubcollections, listResumeVersions, saveResumeVersion, getResumeVersion, deleteResumeVersion, renameResumeVersion, importGuestData, sortHistoryNewestFirst, HISTORY_LIMIT, PRIMARY_RESUME_ID, ResumeVersionMeta } from './db';
 import { localDb } from './utils/localDb';
+import {
+  listGuestResumeVersions,
+  getGuestResumeVersion,
+  saveGuestResumeVersion,
+  renameGuestResumeVersion,
+  deleteGuestResumeVersion,
+  collectGuestVersions,
+  clearGuestResumeData,
+} from './utils/guestVersions';
 import { apiFetch } from './utils/apiClient';
 import { useToast } from './components/Toast';
 import { lazy, Suspense } from 'react';
@@ -161,11 +175,24 @@ const validateAndCleanResumeData = (parsed: any): ResumeData => {
 
 // Helper to get initial default resume
 const getInitialResume = (): ResumeData => {
-  return sampleResumes[0].data;
+  return structuredClone(emptyResume);
 };
+
+// localDb mirror of the signed-in user's most recent master-resume edit whose
+// Firestore write has NOT been confirmed. Written on every edit, cleared once
+// the debounced Firestore save resolves. If the tab is closed inside the
+// debounce window (or the write errors), this is how the edit is recovered on
+// the next load. Signed-in only; never touched by the guest import path, which
+// only reads `ats_master_resume` / `ats_tailored_history` / `ats_guest_resume_*`.
+const UNSAVED_MASTER_KEY = 'ats_unsaved_master';
+// Same idea for tailoring history: a signed-in mirror of the latest history
+// array whose Firestore write is unconfirmed. Separate from `ats_tailored_history`
+// (the guest key) so the guest->account import path never sees it.
+const UNSYNCED_HISTORY_KEY = 'ats_unsynced_history';
 
 export default function App() {
   const { showError, showSuccess, showToast } = useToast();
+  const { recordExpensiveCall, noteRateLimit } = useTailorQueue();
   // Global View Navigation State
   const [currentView, setCurrentView] = useState<'landing' | 'editor' | 'search' | 'ats' | 'interview' | 'cover-letter' | 'integrations' | 'tracker'>(() => readViewFromHash());
 
@@ -301,7 +328,13 @@ export default function App() {
   const [coverLetterError, setCoverLetterError] = useState<string | null>(null);
 
   // History State
-  const [historyList, setHistoryList] = useState<{ id: string; timestamp: string; title: string; result: TailorResponse }[]>([]);
+  const [historyList, setHistoryList] = useState<HistoryEntry[]>([]);
+
+  // Which history entry the currently-displayed result came from. Cover letters
+  // are persisted onto their history entry (they are generated from one
+  // specific tailoring run and are meaningless detached from it), so generating
+  // one needs to know which entry to write to.
+  const [activeHistoryId, setActiveHistoryId] = useState<string | null>(null);
 
   // Jobs Deep Search States
   const [searchQuery, setSearchQuery] = useState('');
@@ -309,21 +342,7 @@ export default function App() {
   const [jobType, setJobType] = useState(() => localStorage.getItem('ats_job_type') || '');
   const [salaryExpectation, setSalaryExpectation] = useState(() => localStorage.getItem('ats_salary_expectation') || '');
   const [remoteStatus, setRemoteStatus] = useState(() => localStorage.getItem('ats_remote_status') || '');
-  const [searchResults, setSearchResults] = useState<{
-    title: string;
-    company: string;
-    location: string;
-    url: string;
-    description: string;
-    source: string;
-    relocationOffered?: boolean;
-    visaSupport?: string;
-    fitScore?: number;
-    verified?: boolean;
-    alreadyTracked?: boolean;
-    salary?: string;
-    postedAt?: string;
-  }[] | null>(null);
+  const [searchResults, setSearchResults] = useState<JobSearchResult[] | null>(null);
   const [jobSourcePicks, setJobSourcePicks] = useState<string[] | null>(null);
   const [isSearchingJobs, setIsSearchingJobs] = useState(false);
   const [searchError, setSearchError] = useState<string | null>(null);
@@ -372,10 +391,45 @@ export default function App() {
         if (dbMaster) {
           setMasterResume(dbMaster);
         }
-        const dbHistory = await localDb.getItem<any[]>('ats_tailored_history', []);
-        setHistoryList(dbHistory);
+        const dbHistory = await localDb.getItem<HistoryEntry[]>('ats_tailored_history', []);
+        setHistoryList(sortHistoryNewestFirst(dbHistory));
+        setResumeVersions(await listGuestResumeVersions());
       } catch (err) {
         console.error('Error loading guest data from IndexedDB:', err);
+      }
+    };
+
+    // Anything the user built while signed out lives only in this browser's
+    // IndexedDB. Without this it is simply stranded the moment they create an
+    // account -- they sign up and are greeted by an empty resume. The import is
+    // additive and id-merged (see importGuestData), so it can never overwrite
+    // an established account with whatever happens to be in this browser.
+    const importGuestWorkIntoAccount = async (userId: string) => {
+      try {
+        await localDb.migrateFromLocalStorage(['ats_master_resume', 'ats_tailored_history']);
+        const guestMaster = await localDb.getItem<ResumeData | null>('ats_master_resume', null);
+        const guestHistory = await localDb.getItem<HistoryEntry[]>('ats_tailored_history', []);
+        const guestVersions = await collectGuestVersions();
+        if (!guestMaster && guestHistory.length === 0 && guestVersions.length === 0) return;
+
+        const imported = await importGuestData(userId, {
+          masterResume: guestMaster,
+          versions: guestVersions,
+          history: guestHistory,
+        });
+
+        await clearGuestResumeData();
+        await localDb.removeItem('ats_tailored_history');
+
+        const parts: string[] = [];
+        if (imported.importedResume) parts.push('your resume');
+        if (imported.importedVersions > 0) parts.push(`${imported.importedVersions} resume version(s)`);
+        if (imported.importedHistory > 0) parts.push(`${imported.importedHistory} tailoring run(s)`);
+        if (parts.length > 0) {
+          showSuccess(`Moved ${parts.join(', ')} from this browser into your account.`);
+        }
+      } catch (e) {
+        console.error('Failed to import guest data into account', e);
       }
     };
 
@@ -385,17 +439,57 @@ export default function App() {
       // per-item subcollections (see src/db.ts). Fails open: if migration
       // itself errors, still proceed to load whatever already exists rather
       // than blocking the app.
-      migrateToSubcollections(user.uid).catch(e => console.error('Failed to migrate Firestore data to v2 schema', e)).finally(() => {
-        getMasterResume(user.uid).then(savedMaster => {
+      migrateToSubcollections(user.uid)
+        .catch(e => console.error('Failed to migrate Firestore data to v2 schema', e))
+        // Guest work is folded in before anything is read back, so the reads
+        // below already reflect it and the UI never flashes an empty resume.
+        .then(() => importGuestWorkIntoAccount(user.uid))
+        .finally(() => {
+        getMasterResume(user.uid).then(async savedMaster => {
           if (savedMaster) setMasterResume(savedMaster);
+          // Recover an edit whose Firestore write was never confirmed (tab
+          // closed inside the debounce window, or the write errored). The
+          // mirror only exists while a save is unconfirmed.
+          try {
+            const unsaved = await localDb.getItem<{ resumeId: string; data: ResumeData } | null>(UNSAVED_MASTER_KEY, null);
+            if (unsaved?.data) {
+              if ((unsaved.resumeId || PRIMARY_RESUME_ID) === PRIMARY_RESUME_ID) {
+                setMasterResume(unsaved.data);
+              }
+              saveResumeVersion(user.uid, unsaved.resumeId || PRIMARY_RESUME_ID, unsaved.data)
+                .then(() => localDb.removeItem(UNSAVED_MASTER_KEY).catch(() => {}))
+                .catch(e => console.error('Retry of unsaved master resume failed', e));
+            }
+          } catch (e) {
+            console.error('Failed to recover unsaved master resume', e);
+          }
         }).catch(e => console.error('Failed to parse saved master resume', e));
 
         listResumeVersions(user.uid).then(versions => {
           setResumeVersions(versions);
         }).catch(e => console.error('Failed to list resume versions', e));
 
-        getHistory(user.uid).then(savedHistory => {
-          if (savedHistory) setHistoryList(savedHistory);
+        getHistory(user.uid).then(async savedHistory => {
+          const loaded = (savedHistory as HistoryEntry[]) || [];
+          try {
+            const unsynced = await localDb.getItem<HistoryEntry[] | null>(UNSYNCED_HISTORY_KEY, null);
+            if (Array.isArray(unsynced) && unsynced.length > 0) {
+              const seen = new Set(loaded.map(h => String(h.id)));
+              const missing = unsynced.filter(h => h?.id && !seen.has(String(h.id)));
+              if (missing.length > 0) {
+                const merged = sortHistoryNewestFirst([...missing, ...loaded]).slice(0, HISTORY_LIMIT);
+                setHistoryList(merged);
+                saveHistory(user.uid, merged as any)
+                  .then(() => localDb.removeItem(UNSYNCED_HISTORY_KEY).catch(() => {}))
+                  .catch(e => console.error('Retry of unsynced history failed', e));
+                return;
+              }
+            }
+            await localDb.removeItem(UNSYNCED_HISTORY_KEY).catch(() => {});
+          } catch (e) {
+            console.error('Failed to recover unsynced tailoring history', e);
+          }
+          setHistoryList(loaded);
         }).catch(e => console.error('Failed to parse tailored history', e));
 
         getAiConfig(user.uid).then(savedAiConfig => {
@@ -431,6 +525,28 @@ export default function App() {
     }
   }, [tailorResult, coverLetter]);
 
+  // Single write path for tailoring history, so the signed-in (Firestore) and
+  // guest (IndexedDB) branches can never drift apart.
+  const persistHistory = (entries: HistoryEntry[]) => {
+    if (user) {
+      // Mirror to localDb first (synchronous-enough) so a tab close before the
+      // Firestore batch commits can't drop a fresh tailoring run. Cleared once
+      // the Firestore write resolves. Deliberately NOT the `ats_tailored_history`
+      // guest key -- that one is read by the guest->account import path.
+      localDb.setItem(UNSYNCED_HISTORY_KEY, entries).catch(() => {});
+      saveHistory(user.uid, entries)
+        .then(() => localDb.removeItem(UNSYNCED_HISTORY_KEY).catch(() => {}))
+        .catch(e => {
+          console.error('Failed to save tailoring history to Firestore', e);
+          showError('Could not save this tailoring run to your account. It is kept on this device and will retry.', e);
+        });
+    } else {
+      localDb.setItem('ats_tailored_history', entries).catch(e =>
+        console.error('Failed to save guest tailoring history', e)
+      );
+    }
+  };
+
   // Save master resume on update. The Firestore write is debounced (~1.5s)
   // since this fires on every field edit and a full-document rewrite per
   // keystroke isn't necessary; local state and guest storage stay immediate.
@@ -448,7 +564,17 @@ export default function App() {
     if (pendingSaveRef.current && user) {
       const { resumeId, data } = pendingSaveRef.current;
       pendingSaveRef.current = null;
-      saveResumeVersion(user.uid, resumeId, data);
+      saveResumeVersion(user.uid, resumeId, data)
+        .then(() => {
+          // Only drop the mirror if no newer edit has queued in the meantime.
+          if (!pendingSaveRef.current) {
+            localDb.removeItem(UNSAVED_MASTER_KEY).catch(() => {});
+          }
+        })
+        .catch((e) => {
+          console.error('Failed to save master resume to Firestore', e);
+          showError('Could not save your resume changes to your account. They are kept on this device and will retry.', e);
+        });
     }
   };
 
@@ -456,14 +582,19 @@ export default function App() {
     setMasterResume(updated);
     if (user) {
       pendingSaveRef.current = { resumeId: activeResumeId, data: updated };
+      // Synchronous-enough local mirror so a tab close inside the debounce
+      // window (or a failed Firestore write) can't lose the edit.
+      localDb.setItem(UNSAVED_MASTER_KEY, { resumeId: activeResumeId, data: updated }).catch(() => {});
       if (saveMasterResumeTimer.current) {
         clearTimeout(saveMasterResumeTimer.current);
       }
       saveMasterResumeTimer.current = setTimeout(() => {
         flushPendingResumeSave();
-      }, 1500);
+      }, 800);
     } else {
-      localDb.setItem('ats_master_resume', updated);
+      saveGuestResumeVersion(activeResumeId, updated).catch(e =>
+        console.error('Failed to save guest resume version', e)
+      );
     }
   };
 
@@ -524,11 +655,13 @@ export default function App() {
   // for the currently-active version first (so an in-flight edit isn't lost
   // or misattributed to the newly-selected version), then loads the target.
   const handleSwitchResumeVersion = async (resumeId: string) => {
-    if (!user || resumeId === activeResumeId) return;
+    if (resumeId === activeResumeId) return;
     flushPendingResumeSave();
     setIsSwitchingVersion(true);
     try {
-      const data = await getResumeVersion(user.uid, resumeId);
+      const data = user
+        ? await getResumeVersion(user.uid, resumeId)
+        : await getGuestResumeVersion(resumeId);
       setMasterResume(data || getInitialResume());
       setActiveResumeId(resumeId);
     } catch (e) {
@@ -542,12 +675,15 @@ export default function App() {
   // Creates a new named version, seeded from the currently active resume's
   // content (the common case: "make a Backend variant from what I have").
   const handleCreateResumeVersion = async (name: string) => {
-    if (!user) return;
     flushPendingResumeSave();
     const newId = 'ver_' + Date.now().toString(36) + Math.random().toString(36).slice(2, 8);
     const seedData = JSON.parse(JSON.stringify(masterResume)) as ResumeData;
     try {
-      await saveResumeVersion(user.uid, newId, seedData, name);
+      if (user) {
+        await saveResumeVersion(user.uid, newId, seedData, name);
+      } else {
+        await saveGuestResumeVersion(newId, seedData, name);
+      }
       setResumeVersions(prev => [...prev, { id: newId, name, updatedAt: Date.now() }]);
       setActiveResumeId(newId);
       setMasterResume(seedData);
@@ -559,9 +695,13 @@ export default function App() {
   };
 
   const handleRenameResumeVersion = async (resumeId: string, name: string) => {
-    if (!user || !name.trim()) return;
+    if (!name.trim()) return;
     try {
-      await renameResumeVersion(user.uid, resumeId, name.trim());
+      if (user) {
+        await renameResumeVersion(user.uid, resumeId, name.trim());
+      } else {
+        await renameGuestResumeVersion(resumeId, name.trim());
+      }
       setResumeVersions(prev => prev.map(v => (v.id === resumeId ? { ...v, name: name.trim() } : v)));
     } catch (e) {
       console.error('Failed to rename resume version', e);
@@ -570,9 +710,13 @@ export default function App() {
   };
 
   const handleDeleteResumeVersion = async (resumeId: string) => {
-    if (!user || resumeId === PRIMARY_RESUME_ID) return;
+    if (resumeId === PRIMARY_RESUME_ID) return;
     try {
-      await deleteResumeVersion(user.uid, resumeId);
+      if (user) {
+        await deleteResumeVersion(user.uid, resumeId);
+      } else {
+        await deleteGuestResumeVersion(resumeId);
+      }
       setResumeVersions(prev => prev.filter(v => v.id !== resumeId));
       if (activeResumeId === resumeId) {
         await handleSwitchResumeVersion(PRIMARY_RESUME_ID);
@@ -581,15 +725,6 @@ export default function App() {
     } catch (e) {
       console.error('Failed to delete resume version', e);
       showError('Could not delete resume version', e);
-    }
-  };
-
-  // Reset to sample
-  const handleLoadSample = (sampleId: string) => {
-    const sample = sampleResumes.find((s) => s.id === sampleId);
-    if (sample) {
-      handleUpdateMaster(sample.data);
-      setTargetLanguage(sample.language);
     }
   };
 
@@ -661,7 +796,7 @@ export default function App() {
     setIsParsing(true);
     setImportStatus({
       type: 'success',
-      message: `Uploading and parsing "${file.name}" with Gemini AI... This may take up to 10 seconds.`
+      message: `Uploading and parsing "${file.name}"... This may take up to 10 seconds.`
     });
 
     const reader = new FileReader();
@@ -753,7 +888,7 @@ export default function App() {
       setIsParsing(true);
       setImportStatus({
         type: 'success',
-        message: `Uploading and parsing "${file.name}" with Gemini AI... This may take up to 10 seconds.`
+        message: `Uploading and parsing "${file.name}"... This may take up to 10 seconds.`
       });
 
       const reader = new FileReader();
@@ -898,9 +1033,12 @@ export default function App() {
           model: selectedModel,
           aiConfig,
         },
-        { apiKey: aiConfig?.apiKey }
+        { apiKey: aiConfig?.apiKey, onRateLimitInfo: noteRateLimit }
       );
-      setSearchResults(data.jobs || []);
+      // Deep search shares the server's expensive-AI bucket with /api/tailor,
+      // so the tailor queue's budget estimate has to know it happened.
+      recordExpensiveCall();
+      setSearchResults(attachJobIds(data.jobs || []));
       if (data.autoQuery) {
         setSearchQueryUsed(data.autoQuery);
       }
@@ -918,15 +1056,28 @@ export default function App() {
     }
   };
 
+  // Import a search result into the tailoring form. The form (#tailoring-form,
+  // in TargetSpecifications) only exists in the 'ats' view, while this is
+  // clicked from 'search' -- so the old scrollIntoView had nothing to find and
+  // the click looked like it did nothing at all. Switch views first, confirm
+  // with a toast, and scroll once the form has actually mounted.
   const handleImportJobDetails = (job: any) => {
     setJobUrl(job.url || '');
     setJobDescription(job.description || '');
     setTargetCompany(job.company || '');
     setTargetTitle(job.title || '');
-    const element = document.getElementById('tailoring-form');
-    if (element) {
-      element.scrollIntoView({ behavior: 'smooth' });
-    }
+    setCurrentView('ats');
+
+    const label = [job.title, job.company].filter(Boolean).join(' at ');
+    showSuccess(label ? `Imported "${label}" into the tailoring form.` : 'Job details imported into the tailoring form.');
+
+    // Two frames: one for React to commit the view switch, one for the browser
+    // to lay the form out before we scroll to it.
+    requestAnimationFrame(() => {
+      requestAnimationFrame(() => {
+        document.getElementById('tailoring-form')?.scrollIntoView({ behavior: 'smooth', block: 'start' });
+      });
+    });
   };
 
   const handleTailor = async (e: FormEvent) => {
@@ -968,13 +1119,10 @@ export default function App() {
         result: data,
       };
 
-      const updatedHistory = [newHistoryItem, ...historyList].slice(0, 10); // Keep last 10
+      const updatedHistory = [newHistoryItem, ...historyList].slice(0, HISTORY_LIMIT);
       setHistoryList(updatedHistory);
-      if (user) {
-        saveHistory(user.uid, updatedHistory);
-      } else {
-        localDb.setItem('ats_tailored_history', updatedHistory);
-      }
+      setActiveHistoryId(newHistoryItem.id);
+      persistHistory(updatedHistory);
 
     } catch (err: any) {
       console.error(err);
@@ -984,87 +1132,115 @@ export default function App() {
     }
   };
 
-  // Batch tailoring: process multiple search-result jobs sequentially against
-  // the same master resume. Sequential (not parallel) because /api/tailor is
-  // rate-limited server-side (expensiveAiLimiter) -- one at a time naturally
-  // respects that instead of firing a burst that mostly comes back 429.
-  const [batchSelectedIndices, setBatchSelectedIndices] = useState<Set<number>>(new Set());
-  const [isBatchRunning, setIsBatchRunning] = useState(false);
-  const [batchProgress, setBatchProgress] = useState<{ current: number; total: number } | null>(null);
-
-  const handleToggleBatchSelect = (idx: number) => {
-    setBatchSelectedIndices((prev) => {
-      const next = new Set(prev);
-      if (next.has(idx)) next.delete(idx); else next.add(idx);
-      return next;
-    });
-  };
-
-  const handleRunBatchTailor = async () => {
-    if (!searchResults || batchSelectedIndices.size === 0) return;
-    const jobs = Array.from(batchSelectedIndices).map((idx) => searchResults[idx]).filter(Boolean);
-    setIsBatchRunning(true);
-    setBatchProgress({ current: 0, total: jobs.length });
-
-    const newHistoryItems: { id: string; timestamp: string; title: string; targetCompany: string; targetTitle: string; result: TailorResponse }[] = [];
-    let successCount = 0;
-
-    for (let i = 0; i < jobs.length; i++) {
-      const job = jobs[i];
-      setBatchProgress({ current: i + 1, total: jobs.length });
-      try {
-        const data = await apiFetch<TailorResponse>(
-          '/api/tailor',
-          {
-            masterResume,
-            jobDescription: job.description || '',
-            jobUrl: job.url || '',
-            language: targetLanguage,
-            optimizeForRelocation,
-            model: selectedModel,
-            aiConfig,
-          },
-          { apiKey: aiConfig?.apiKey }
-        );
-        newHistoryItems.push({
-          id: Date.now().toString() + '_' + i,
-          timestamp: new Date().toLocaleString(),
-          title: `${job.title || data.tailoredResume.contact.title} at ${job.company || 'Target Job'}`,
-          targetCompany: job.company || '',
-          targetTitle: job.title || '',
-          result: data,
-        });
-        successCount++;
-      } catch (err) {
-        console.error(`Batch tailor failed for ${job.company || 'unknown job'}:`, err);
-      }
-    }
-
-    if (newHistoryItems.length > 0) {
-      const updatedHistory = [...newHistoryItems, ...historyList].slice(0, 10);
-      setHistoryList(updatedHistory);
-      if (user) {
-        saveHistory(user.uid, updatedHistory);
-      } else {
-        localDb.setItem('ats_tailored_history', updatedHistory);
-      }
-    }
-
-    setIsBatchRunning(false);
-    setBatchProgress(null);
-    setBatchSelectedIndices(new Set());
-    if (successCount > 0) {
-      showSuccess(`Batch complete: ${successCount}/${jobs.length} tailored successfully. Check History to review each.`);
-    } else {
-      showError('Batch tailoring failed for all selected jobs.', null);
+  // --- Application Tracker read/write, one path for both storage backends ---
+  const loadApplications = async (): Promise<TrackerApplication[]> => {
+    if (user) return ((await getJobApplications(user.uid)) as TrackerApplication[]) || [];
+    try {
+      const saved = localStorage.getItem('ats_tailor_job_applications');
+      return saved ? JSON.parse(saved) : [];
+    } catch {
+      return [];
     }
   };
+  const saveApplications = async (apps: TrackerApplication[]): Promise<void> => {
+    if (user) await saveJobApplications(user.uid, apps);
+    else localStorage.setItem('ats_tailor_job_applications', JSON.stringify(apps));
+  };
+  const newApplicationId = () => 'app_' + Math.random().toString(36).slice(2, 11);
+  const todayIso = () => new Date().toISOString().split('T')[0];
+
+  // Fold a finished batch of tailor-queue runs into the tracker in one write.
+  const handleQueueDrained = async (
+    succeeded: { jobId: string; job: { company: string; title: string; url: string; location: string } }[]
+  ) => {
+    try {
+      const apps = await loadApplications();
+      const next = upsertApplications(
+        apps,
+        succeeded.map((it) => ({
+          company: it.job.company,
+          title: it.job.title,
+          jobUrl: it.job.url || undefined,
+          location: it.job.location || undefined,
+        })),
+        {
+          today: todayIso(),
+          resumeId: user ? activeResumeId : undefined,
+          insertStatus: 'saved',
+          noteFor: () => `[Queue] Tailored resume on ${todayIso()}`,
+          newId: newApplicationId,
+        }
+      );
+      await saveApplications(next);
+      // Keep the "in tracker" badge on the results list honest.
+      setSearchResults((prev) =>
+        prev
+          ? prev.map((j) => (succeeded.some((s) => s.jobId === j.id) ? { ...j, alreadyTracked: true } : j))
+          : prev
+      );
+      const n = succeeded.length;
+      showSuccess(`Added ${n} tailored ${n === 1 ? 'job' : 'jobs'} to your Application Tracker.`);
+    } catch (e) {
+      console.error('Failed to add queue results to tracker', e);
+    }
+  };
+
+  // Per-job "Quick Tailor" and multi-select "Tailor Selected" both feed one
+  // sequential queue (src/components/tailorQueue). The runner lives above <App />
+  // in main.tsx; this registers the data + callbacks it needs, refreshed each
+  // render so master resume / model / history stay current.
+  useRegisterTailorQueueConfig({
+    masterResume,
+    aiConfig: aiConfig ?? null,
+    selectedModel,
+    targetLanguage,
+    optimizeForRelocation,
+    existingHistory: historyList,
+    onRunSucceeded: (_item, entry) => {
+      setHistoryList((prev) => {
+        const next = mergeHistory(prev, [entry], HISTORY_LIMIT);
+        persistHistory(next);
+        return next;
+      });
+    },
+    onOpenRun: (item) => {
+      const existing = historyList.find((h) => h.id === item.historyId);
+      const entry =
+        existing ??
+        (item.result
+          ? buildHistoryEntry(item.job, item.result, item.historyId || item.jobId, new Date())
+          : null);
+      if (entry) handleLoadHistory(entry);
+    },
+    onQueueDrained: handleQueueDrained,
+  });
 
   // Clear tailored result to go back
   const handleBackToInputs = () => {
     setTailorResult(null);
     setCoverLetter(null);
     setCoverLetterError(null);
+    setActiveHistoryId(null);
+  };
+
+  // Cover letter edits write back to the history entry they belong to, on the
+  // same ~1.5s debounce the master resume uses -- a full history write per
+  // keystroke would be wasteful, and the local state is already immediate.
+  const coverLetterSaveTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
+
+  const handleUpdateCoverLetter = (updated: CoverLetterData) => {
+    setCoverLetter(updated);
+    if (!activeHistoryId) return;
+    if (coverLetterSaveTimer.current) clearTimeout(coverLetterSaveTimer.current);
+    coverLetterSaveTimer.current = setTimeout(() => {
+      setHistoryList(current => {
+        const next = current.map(item =>
+          item.id === activeHistoryId ? { ...item, coverLetter: updated } : item
+        );
+        persistHistory(next);
+        return next;
+      });
+    }, 1500);
   };
 
   // Generate ATS-Optimized Cover Letter
@@ -1085,6 +1261,16 @@ export default function App() {
         { apiKey: aiConfig?.apiKey }
       );
       setCoverLetter(data);
+      // Persist the letter onto the history entry it was generated from.
+      // Without this it lives only in the per-browser `ats_last_session` scratch
+      // key and is lost on sign-in elsewhere, or as soon as the result clears.
+      if (activeHistoryId) {
+        const updatedHistory = historyList.map(item =>
+          item.id === activeHistoryId ? { ...item, coverLetter: data } : item
+        );
+        setHistoryList(updatedHistory);
+        persistHistory(updatedHistory);
+      }
     } catch (err: any) {
       console.error(err);
       setCoverLetterError(err.message || 'An unexpected error occurred while generating the cover letter. Please verify your settings and API keys.');
@@ -1239,25 +1425,25 @@ export default function App() {
   };
 
   // Load from history
-  const handleLoadHistory = (item: any) => {
+  const handleLoadHistory = (item: HistoryEntry) => {
     setTailorResult(item.result);
     setTargetLanguage(item.result.tailoredResume.languages && item.result.tailoredResume.languages.includes('Français') ? 'fr' : 'en');
     setTargetCompany(item.targetCompany || '');
     setTargetTitle(item.targetTitle || '');
     setActiveResultTab('audit');
     setCurrentView('ats');
-    setCoverLetter(null);
+    setActiveHistoryId(item.id);
+    // A cover letter saved against this run comes back with it; runs that never
+    // had one start empty rather than showing the previous run's letter.
+    setCoverLetter(item.coverLetter || null);
     setCoverLetterError(null);
   };
 
   const handleClearHistory = () => {
     if (confirm('Are you sure you want to clear your tailoring history?')) {
       setHistoryList([]);
-      if (user) {
-        saveHistory(user.uid, []);
-      } else {
-        localStorage.removeItem('ats_tailored_history');
-      }
+      setActiveHistoryId(null);
+      persistHistory([]);
     }
   };
 
@@ -1446,17 +1632,9 @@ export default function App() {
       const company = targetCompany || 'Unknown Company';
       const title = targetTitle || tailorResult?.tailoredResume.contact.title || masterResume.contact.title || 'Unknown Role';
       
-      let apps = [];
-      if (user) {
-        apps = await getJobApplications(user.uid) || [];
-      } else {
-        const saved = localStorage.getItem('ats_tailor_job_applications');
-        if (saved) apps = JSON.parse(saved);
-      }
-
-      // Check if application already exists for this title/company (simple heuristic)
-      const existingAppIndex = apps.findIndex((a: any) => a.company.toLowerCase() === company.toLowerCase() && a.title.toLowerCase() === title.toLowerCase());
-      const today = new Date().toISOString().split('T')[0];
+      const apps = await loadApplications();
+      const existingAppIndex = findApplicationIndex(apps, company, title);
+      const today = todayIso();
 
       if (existingAppIndex >= 0) {
         apps[existingAppIndex] = {
@@ -1469,7 +1647,7 @@ export default function App() {
         };
       } else {
         apps.unshift({
-          id: 'app_' + Math.random().toString(36).substr(2, 9),
+          id: newApplicationId(),
           company,
           title,
           location: 'Remote/Unknown',
@@ -1482,11 +1660,7 @@ export default function App() {
         });
       }
 
-      if (user) {
-        await saveJobApplications(user.uid, apps);
-      } else {
-        localStorage.setItem('ats_tailor_job_applications', JSON.stringify(apps));
-      }
+      await saveApplications(apps);
     } catch (err) {
       console.error('Failed to auto-add application to tracker', err);
     }
@@ -1499,49 +1673,19 @@ export default function App() {
       const company = targetCompany || 'Unknown Company';
       const title = targetTitle || tailorResult.tailoredResume.contact.title || masterResume.contact.title || 'Unknown Role';
       
-      let apps = [];
-      if (user) {
-        apps = await getJobApplications(user.uid) || [];
-      } else {
-        const saved = localStorage.getItem('ats_tailor_job_applications');
-        if (saved) apps = JSON.parse(saved);
-      }
-
-      const today = new Date().toISOString().split('T')[0];
-      const existingAppIndex = apps.findIndex((a: any) => 
-        a.company.toLowerCase() === company.toLowerCase() && 
-        a.title.toLowerCase() === title.toLowerCase()
-      );
-
-      if (existingAppIndex >= 0) {
-        apps[existingAppIndex] = {
-          ...apps[existingAppIndex],
-          status: apps[existingAppIndex].status || 'saved',
-          jobUrl: jobUrl || apps[existingAppIndex].jobUrl,
-          dateUpdated: today,
-          resumeId: user ? activeResumeId : apps[existingAppIndex].resumeId,
-          notes: (apps[existingAppIndex].notes || '') + `\n[System Sync]: Tailored resume re-synced on ${today}.`
-        };
-      } else {
-        apps.unshift({
-          id: 'app_' + Math.random().toString(36).substr(2, 9),
-          company,
-          title,
-          location: 'Remote/Unknown',
-          status: 'saved',
-          jobUrl: jobUrl,
-          dateAdded: today,
-          dateUpdated: today,
+      const apps = await loadApplications();
+      const next = upsertApplications(
+        apps,
+        [{ company, title, jobUrl: jobUrl || undefined }],
+        {
+          today: todayIso(),
           resumeId: user ? activeResumeId : undefined,
-          notes: `[System Sync]: Tailored resume successfully synchronized with Job Tracker!`
-        });
-      }
-
-      if (user) {
-        await saveJobApplications(user.uid, apps);
-      } else {
-        localStorage.setItem('ats_tailor_job_applications', JSON.stringify(apps));
-      }
+          insertStatus: 'saved',
+          noteFor: () => `[System Sync]: Tailored resume synchronized with Job Tracker on ${todayIso()}.`,
+          newId: newApplicationId,
+        }
+      );
+      await saveApplications(next);
       showSuccess(`Successfully synchronized ${title} at ${company} with your Job Tracker!`);
     } catch (err) {
       console.error(err);
@@ -1553,7 +1697,6 @@ export default function App() {
     return (
       <LandingPage
         onNavigate={(view) => setCurrentView(view)}
-        onLoadSample={() => handleLoadSample('en-software-dev')}
         darkMode={darkMode}
         onToggleDarkMode={() => setDarkMode(!darkMode)}
         user={user}
@@ -1586,6 +1729,7 @@ export default function App() {
             </div>
 
             <div className="flex flex-wrap items-center gap-2" id="header-right">
+              <TailorQueueNavChip onOpen={() => setCurrentView('search')} />
               {/* Premium Model Selection / Quota Optimization Selector */}
               <div className="flex items-center gap-1.5 bg-slate-100 dark:bg-slate-800 rounded-full pl-2.5 pr-1 py-1 border border-transparent dark:border-slate-700 shadow-2xs">
                 <Brain className="w-3.5 h-3.5 text-indigo-500 animate-pulse" />
@@ -1885,17 +2029,18 @@ export default function App() {
                     </div>
                   </div>
 
-                  {user && (
-                    <ResumeVersionSwitcher
-                      versions={resumeVersions}
-                      activeResumeId={activeResumeId}
-                      isSwitching={isSwitchingVersion}
-                      onSwitch={handleSwitchResumeVersion}
-                      onCreate={handleCreateResumeVersion}
-                      onRename={handleRenameResumeVersion}
-                      onDelete={handleDeleteResumeVersion}
-                    />
-                  )}
+                  {/* Shown to guests too: versions persist to IndexedDB via
+                      utils/guestVersions and are carried into the account on
+                      first sign-in. */}
+                  <ResumeVersionSwitcher
+                    versions={resumeVersions}
+                    activeResumeId={activeResumeId}
+                    isSwitching={isSwitchingVersion}
+                    onSwitch={handleSwitchResumeVersion}
+                    onCreate={handleCreateResumeVersion}
+                    onRename={handleRenameResumeVersion}
+                    onDelete={handleDeleteResumeVersion}
+                  />
 
                   <AchievementBank />
 
@@ -1911,7 +2056,6 @@ export default function App() {
                           onImportJSON={handleImportJSON}
                           onImportDroppedFile={handleImportDroppedFile}
                           onExportJSON={handleExportJSON}
-                          onLoadSample={handleLoadSample}
                           importStatus={importStatus}
                           onCloseImportStatus={() => setImportStatus(null)}
                           aiConfig={aiConfig}
@@ -1988,11 +2132,6 @@ export default function App() {
                       masterResume={masterResume}
                       searchQueryUsed={searchQueryUsed}
                       searchLocationUsed={searchLocationUsed}
-                      batchSelectedIndices={batchSelectedIndices}
-                      onToggleBatchSelect={handleToggleBatchSelect}
-                      onRunBatchTailor={handleRunBatchTailor}
-                      isBatchRunning={isBatchRunning}
-                      batchProgress={batchProgress}
                     />
                   </div>
 
@@ -2170,6 +2309,8 @@ export default function App() {
                               onUpdate={(updated) => setTailorResult({ ...tailorResult, tailoredResume: updated })}
                               aiConfig={aiConfig}
                               selectedModel={selectedModel}
+                              targetTitle={targetTitle}
+                              targetCompany={targetCompany}
                             />
                           </div>
                         ) : activeResultTab === 'diff' ? (
@@ -2186,7 +2327,7 @@ export default function App() {
                               <CoverLetterPreview
                                 coverLetter={coverLetter}
                                 keywords={tailorResult.keywords}
-                                onUpdate={(updated) => setCoverLetter(updated)}
+                                onUpdate={handleUpdateCoverLetter}
                                 onRegenerate={handleGenerateCoverLetter}
                                 isRegenerating={generatingCoverLetter}
                                 aiConfig={aiConfig}
@@ -2300,7 +2441,7 @@ export default function App() {
                         <CoverLetterPreview
                           coverLetter={coverLetter}
                           keywords={tailorResult.keywords}
-                          onUpdate={(updated) => setCoverLetter(updated)}
+                          onUpdate={handleUpdateCoverLetter}
                           onRegenerate={handleGenerateCoverLetter}
                           isRegenerating={generatingCoverLetter}
                           aiConfig={aiConfig}

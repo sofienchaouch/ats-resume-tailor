@@ -109,6 +109,44 @@ export interface CoverLetterData {
   senderName: string;
 }
 
+/**
+ * One saved tailoring run. Persisted per-entry to users/{uid}/history/{id} for
+ * signed-in users, and to the `ats_tailored_history` array in localDb for
+ * guests. `coverLetter` is attached lazily: it only exists once the user has
+ * generated one for this run.
+ */
+export interface HistoryEntry {
+  id: string;
+  timestamp: string;
+  title: string;
+  targetCompany?: string;
+  targetTitle?: string;
+  result: TailorResponse;
+  coverLetter?: CoverLetterData;
+}
+
+/**
+ * One job posting in the Deep Search results list. Mirrors the
+ * /api/jobs-deep-search response the client renders, plus a client-assigned
+ * stable `id` (see src/utils/jobKey.ts) used as the tailor-queue handle.
+ */
+export interface JobSearchResult {
+  id: string;
+  title: string;
+  company: string;
+  location: string;
+  url: string;
+  description: string;
+  source: string;
+  relocationOffered?: boolean;
+  visaSupport?: string;
+  fitScore?: number;
+  verified?: boolean;
+  alreadyTracked?: boolean;
+  salary?: string;
+  postedAt?: string;
+}
+
 export type AiProviderId = 'gemini' | 'openai' | 'custom' | 'openrouter' | 'claude-cli';
 
 /**

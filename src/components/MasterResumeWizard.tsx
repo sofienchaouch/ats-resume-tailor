@@ -38,7 +38,6 @@ interface MasterResumeWizardProps {
   onImportJSON: (e: any) => void;
   onImportDroppedFile?: (file: File) => void;
   onExportJSON: () => void;
-  onLoadSample: (preset: string) => void;
   importStatus: { type: 'success' | 'error'; message: string } | null;
   onCloseImportStatus: () => void;
   aiConfig?: AiConfig;
@@ -53,7 +52,6 @@ export default function MasterResumeWizard({
   onImportJSON,
   onImportDroppedFile,
   onExportJSON,
-  onLoadSample,
   importStatus,
   onCloseImportStatus,
   aiConfig,
@@ -470,42 +468,11 @@ export default function MasterResumeWizard({
             <FileText className="w-5 h-5 text-indigo-600 dark:text-indigo-400" />
             1. Master Main Resume Workspace
           </h2>
-          <p className="text-xs text-slate-500 dark:text-slate-400 font-medium">Build, import/export, or load a preset resume template</p>
+          <p className="text-xs text-slate-500 dark:text-slate-400 font-medium">Build your master resume, or import/export it as a file</p>
         </div>
 
         {/* Import / Export & Presets Container */}
         <div className="flex flex-col sm:flex-row sm:items-center gap-3" id="header-tools-container">
-          {/* Pre-fill Quick Presets */}
-          <div className="flex items-center gap-1" id="presets-panel">
-            <span className="text-[10px] uppercase font-bold text-slate-400 dark:text-slate-500 tracking-wider mr-1">Sample:</span>
-            <button
-              onClick={() => onLoadSample('en-software-dev')}
-              className="text-[10px] font-bold bg-slate-50 dark:bg-slate-800 hover:bg-indigo-50 dark:hover:bg-indigo-950/30 border border-slate-200 dark:border-slate-700 hover:border-indigo-200 px-2 py-1 rounded transition-colors text-slate-700 dark:text-slate-300 hover:text-indigo-700 dark:hover:text-indigo-400 cursor-pointer"
-              id="load-en-sample"
-              type="button"
-            >
-              EN Engineer
-            </button>
-            <button
-              onClick={() => onLoadSample('fr-software-dev')}
-              className="text-[10px] font-bold bg-slate-50 dark:bg-slate-800 hover:bg-indigo-55 border border-slate-200 dark:border-slate-700 hover:border-indigo-200 px-2 py-1 rounded transition-colors text-slate-700 dark:text-slate-300 hover:text-indigo-700 dark:hover:text-indigo-400 cursor-pointer"
-              id="load-fr-sample"
-              type="button"
-            >
-              FR Dev
-            </button>
-            <button
-              onClick={() => onLoadSample('en-product-mgr')}
-              className="text-[10px] font-bold bg-slate-50 dark:bg-slate-800 hover:bg-indigo-55 border border-slate-200 dark:border-slate-700 hover:border-indigo-200 px-2 py-1 rounded transition-colors text-slate-700 dark:text-slate-300 hover:text-indigo-700 dark:hover:text-indigo-400 cursor-pointer"
-              id="load-pm-sample"
-              type="button"
-            >
-              EN PM
-            </button>
-          </div>
-
-          <div className="h-4 w-[1px] bg-slate-200 dark:bg-slate-800 hidden sm:block"></div>
-
           {/* File Import / Export actions */}
           <div className="flex items-center gap-2 flex-wrap" id="import-export-actions">
             <input

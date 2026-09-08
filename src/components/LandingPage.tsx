@@ -26,7 +26,6 @@ import {
 
 interface LandingPageProps {
   onNavigate: (view: 'editor' | 'search' | 'ats' | 'interview' | 'cover-letter' | 'integrations' | 'tracker') => void;
-  onLoadSample: () => void;
   darkMode: boolean;
   onToggleDarkMode: () => void;
   user: any;
@@ -34,9 +33,8 @@ interface LandingPageProps {
 }
 
 export default function LandingPage({ 
-  onNavigate, 
-  onLoadSample, 
-  darkMode, 
+  onNavigate,
+  darkMode,
   onToggleDarkMode,
   user,
   onSignInGoogle
@@ -129,11 +127,8 @@ export default function LandingPage({
                   >
                     Sign In
                   </button>
-                  <button 
-                    onClick={() => {
-                      onLoadSample();
-                      onNavigate('editor');
-                    }}
+                  <button
+                    onClick={() => onNavigate('editor')}
                     className="text-xs font-bold px-4 py-2 bg-indigo-600 hover:bg-indigo-700 text-white rounded-xl shadow-xs cursor-pointer flex items-center gap-1.5 transition-all"
                   >
                     Enter App <ArrowRight className="w-3.5 h-3.5" />
@@ -196,15 +191,6 @@ export default function LandingPage({
               <ArrowRight className="w-4 h-4 group-hover:translate-x-1 transition-transform" />
             </button>
 
-            <button
-              onClick={() => {
-                onLoadSample();
-                onNavigate('editor');
-              }}
-              className="w-full sm:w-auto text-sm font-bold px-7 py-4 bg-white hover:bg-slate-100 dark:bg-slate-900 dark:hover:bg-slate-800 text-slate-800 dark:text-slate-200 rounded-xl border border-slate-250 dark:border-slate-800 transition-all cursor-pointer flex items-center justify-center gap-1.5"
-            >
-              Load Demo Template
-            </button>
           </motion.div>
 
           {/* Trust and Stats Banner */}
@@ -712,15 +698,6 @@ export default function LandingPage({
               className="w-full sm:w-auto text-xs font-extrabold px-8 py-3.5 bg-white text-indigo-700 hover:bg-indigo-50 rounded-xl transition-all cursor-pointer shadow-sm transform active:scale-98 flex items-center justify-center gap-1.5"
             >
               Start For Free <ArrowRight className="w-3.5 h-3.5" />
-            </button>
-            <button
-              onClick={() => {
-                onLoadSample();
-                onNavigate('editor');
-              }}
-              className="w-full sm:w-auto text-xs font-bold px-8 py-3.5 bg-indigo-700 text-white hover:bg-indigo-650 rounded-xl transition-all cursor-pointer border border-indigo-550 flex items-center justify-center"
-            >
-              Load Demo Resume
             </button>
           </div>
         </div>

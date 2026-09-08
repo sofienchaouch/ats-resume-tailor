@@ -72,6 +72,31 @@ npm run lint       # eslint .
 npm test           # vitest run
 ```
 
+## Run with Docker
+
+```bash
+docker compose up --build
+```
+
+Serves on http://localhost:3000 (override with `HOST_PORT`). The image bundles
+Chromium, so PDF export works without a browser installed on the host.
+
+Secrets come from your `.env` at run time and are never copied into the image.
+Plain Docker, without compose:
+
+```bash
+docker build -t ats-resume-tailor .
+docker run --rm -p 3000:8080 --env-file .env --shm-size=512m ats-resume-tailor
+```
+
+## Data & storage
+
+Signed-in accounts store their master resume, named resume versions, tailoring
+history (last 100 runs) and cover letters in Firestore. Signed-out use is fully
+functional and persists to the browser's IndexedDB; on first sign-in that work
+is moved into the account automatically. The import is additive — it will never
+overwrite a resume the account already has.
+
 ## Project docs
 
 - [CLAUDE.md](CLAUDE.md) — architecture notes, provider-routing rules, known gaps

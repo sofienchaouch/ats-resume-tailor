@@ -23,6 +23,11 @@ export default function ClaudeCliAuthPanel() {
   const [status, setStatus] = useState<ClaudeCliStatus | null>(null);
   const [checking, setChecking] = useState(true);
   const [error, setError] = useState<string | null>(null);
+  // The server refuses these routes outright when ENABLE_CLAUDE_CLI_PROVIDER is
+  // not "true" (a deployed build, or a container that deliberately drops the
+  // flag). That is an expected environment state, not a fault -- reporting it as
+  // a red error implies something broke that the user could fix here.
+  const [disabled, setDisabled] = useState(false);
   const [awaitingLogin, setAwaitingLogin] = useState(false);
   const [manualCommand, setManualCommand] = useState<string | null>(null);
   const pollRef = useRef<number | null>(null);
@@ -36,8 +41,14 @@ export default function ClaudeCliAuthPanel() {
       const res = await fetch('/api/claude-cli/status');
       if (!res.ok) {
         const body = await res.json().catch(() => ({}));
+        if (body.code === 'CLAUDE_CLI_DISABLED') {
+          setDisabled(true);
+          setError(null);
+          return null;
+        }
         throw new Error(body.error || `Status check failed (${res.status})`);
       }
+      setDisabled(false);
       return (await res.json()) as ClaudeCliStatus;
     } catch (e: any) {
       setError(e?.message || 'Could not reach the status endpoint.');
@@ -138,13 +149,28 @@ export default function ClaudeCliAuthPanel() {
       </div>
 
       <div className="text-[11px] leading-relaxed" aria-live="polite">
-        {checking && !status && (
+        {disabled && (
+          <div className="space-y-1">
+            <span className="flex items-center gap-1.5 text-slate-600 dark:text-slate-300 font-bold">
+              <AlertTriangle className="w-3.5 h-3.5" />
+              Not available in this environment
+            </span>
+            <p className="text-slate-500 dark:text-slate-400">
+              This provider shells out to the <code>claude</code> binary on the machine running the
+              server, so it only works when you run the app locally with{' '}
+              <code>ENABLE_CLAUDE_CLI_PROVIDER=true</code> in <code>.env</code>. Pick another provider
+              above — AI requests fall back to Gemini automatically.
+            </p>
+          </div>
+        )}
+
+        {!disabled && checking && !status && (
           <span className="flex items-center gap-1.5 text-slate-500 dark:text-slate-400 font-semibold">
             <Loader2 className="w-3.5 h-3.5 animate-spin" /> Checking CLI session (runs a live test request, ~20s)...
           </span>
         )}
 
-        {status && healthy && (
+        {!disabled && status && healthy && (
           <span className="flex items-center gap-1.5 text-emerald-700 dark:text-emerald-400 font-bold">
             <CheckCircle2 className="w-3.5 h-3.5" />
             Connected{status.email ? ` as ${status.email}` : ''}
@@ -152,7 +178,7 @@ export default function ClaudeCliAuthPanel() {
           </span>
         )}
 
-        {status && !healthy && (
+        {!disabled && status && !healthy && (
           <div className="space-y-1">
             <span className="flex items-center gap-1.5 text-amber-700 dark:text-amber-400 font-bold">
               <AlertTriangle className="w-3.5 h-3.5" />

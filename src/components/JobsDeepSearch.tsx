@@ -12,7 +12,23 @@ import {
   X,
   Download
 } from 'lucide-react';
-import { ResumeData } from '../types';
+import { ResumeData, JobSearchResult } from '../types';
+import type { QueueJobInput } from '../utils/tailorQueue';
+import { QuickTailorButton } from './tailorQueue/QuickTailorButton';
+import { TailorQueueBar } from './tailorQueue/TailorQueueBar';
+import { TailorResultsTray } from './tailorQueue/TailorResultsTray';
+
+/** Search result → the snapshot the tailor queue stores. */
+function toQueueJob(job: JobSearchResult): QueueJobInput {
+  return {
+    id: job.id,
+    title: job.title || '',
+    company: job.company || '',
+    location: job.location || '',
+    url: job.url || '',
+    description: job.description || '',
+  };
+}
 
 interface JobsDeepSearchProps {
   searchBasedOnResume: boolean;
@@ -31,26 +47,21 @@ interface JobsDeepSearchProps {
   setRemoteStatus: (val: string) => void;
   isSearchingJobs: boolean;
   searchError: string | null;
-  searchResults: any[] | null;
+  searchResults: JobSearchResult[] | null;
   onClearSearchResults: () => void;
   selectedSearchJobIndex: number | null;
   setSelectedSearchJobIndex: (idx: number | null) => void;
   onDeepSearchJobs: (e: any) => void;
-  onImportJobDetails: (job: any) => void;
+  onImportJobDetails: (job: JobSearchResult) => void;
   masterResume: ResumeData;
   searchQueryUsed: string;
   searchLocationUsed: string;
-  batchSelectedIndices?: Set<number>;
-  onToggleBatchSelect?: (idx: number) => void;
-  onRunBatchTailor?: () => void;
   sourcePicks: string[] | null;
   setSourcePicks: (v: string[] | null) => void;
   deepMode: boolean;
   setDeepMode: (v: boolean) => void;
   watchlistRaw: string;
   setWatchlistRaw: (v: string) => void;
-  isBatchRunning?: boolean;
-  batchProgress?: { current: number; total: number } | null;
 }
 
 export default function JobsDeepSearch({
@@ -83,14 +94,24 @@ export default function JobsDeepSearch({
   watchlistRaw,
   setWatchlistRaw,
   masterResume,
-  batchSelectedIndices,
-  onToggleBatchSelect,
-  onRunBatchTailor,
-  isBatchRunning,
-  batchProgress,
   searchQueryUsed,
   searchLocationUsed
 }: JobsDeepSearchProps) {
+  // Batch selection is view-local: nothing outside this component needs it, and
+  // keying on the job's stable id (not its list index) means a stale selection
+  // after a new search simply matches nothing.
+  const [batchSelectedIds, setBatchSelectedIds] = useState<Set<string>>(new Set());
+  useEffect(() => { setBatchSelectedIds(new Set()); }, [searchResults]);
+  const toggleBatchSelect = (id: string) => {
+    setBatchSelectedIds((prev) => {
+      const next = new Set(prev);
+      if (next.has(id)) next.delete(id); else next.add(id);
+      return next;
+    });
+  };
+  const selectedQueueJobs = (searchResults || [])
+    .filter((j) => batchSelectedIds.has(j.id))
+    .map(toQueueJob);
   const [availableSources, setAvailableSources] = useState<Array<{ id: string; label: string; available: boolean }>>([]);
   useEffect(() => {
     let alive = true;
@@ -110,13 +131,13 @@ export default function JobsDeepSearch({
   const exportToCSV = () => {
     if (!searchResults || searchResults.length === 0) return;
     
-    const headers = ['Title', 'Company', 'Location', 'URL', 'Match Score'];
+    const headers = ['Title', 'Company', 'Location', 'URL', 'Fit Score'];
     const rows = searchResults.map(job => [
       `"${job.title?.replace(/"/g, '""') || ''}"`,
       `"${job.company?.replace(/"/g, '""') || ''}"`,
       `"${job.location?.replace(/"/g, '""') || ''}"`,
-      `"${job.applyUrl?.replace(/"/g, '""') || ''}"`,
-      job.matchScore || ''
+      `"${job.url?.replace(/"/g, '""') || ''}"`,
+      job.fitScore ?? ''
     ]);
     
     const csvContent = "data:text/csv;charset=utf-8," 
@@ -396,35 +417,22 @@ export default function JobsDeepSearch({
               </div>
             </div>
 
-            {onRunBatchTailor && batchSelectedIndices && (
-              <div className="flex items-center justify-between gap-2 bg-indigo-50 dark:bg-indigo-950/30 border border-indigo-100 dark:border-indigo-900/50 rounded-xl px-3 py-2">
-                <span className="text-[11px] font-bold text-indigo-700 dark:text-indigo-400">
-                  {isBatchRunning && batchProgress
-                    ? `Tailoring ${batchProgress.current}/${batchProgress.total}...`
-                    : `${batchSelectedIndices.size} job${batchSelectedIndices.size !== 1 ? 's' : ''} selected for batch tailoring`}
-                </span>
-                <button
-                  onClick={onRunBatchTailor}
-                  disabled={batchSelectedIndices.size === 0 || isBatchRunning}
-                  className="bg-indigo-600 hover:bg-indigo-700 disabled:bg-slate-200 disabled:text-slate-400 text-white text-[11px] font-bold px-3 py-1.5 rounded-lg flex items-center gap-1 cursor-pointer"
-                  type="button"
-                >
-                  {isBatchRunning ? <Loader2 className="w-3 h-3 animate-spin" /> : <Sparkles className="w-3 h-3" />}
-                  Tailor Selected
-                </button>
-              </div>
-            )}
+            <TailorQueueBar
+              selectedJobs={selectedQueueJobs}
+              onCleared={() => setBatchSelectedIds(new Set())}
+            />
+            <TailorResultsTray />
 
             <div className="space-y-2 max-h-[300px] overflow-y-auto pr-1" id="search-results-list">
               {searchResults.map((job, idx) => {
                 const isSelected = selectedSearchJobIndex === idx;
-                const isBatchSelected = batchSelectedIndices?.has(idx) || false;
+                const isBatchSelected = batchSelectedIds.has(job.id);
                 return (
                   <motion.div
                     initial={{ opacity: 0, y: 15 }}
                     animate={{ opacity: 1, y: 0 }}
                     transition={{ delay: idx * 0.05, duration: 0.3 }}
-                    key={idx}
+                    key={job.id}
                     className={`border rounded-xl p-3 transition-all cursor-pointer text-left ${
                       isSelected
                         ? 'border-indigo-500 bg-indigo-50/20 shadow-xs'
@@ -433,19 +441,17 @@ export default function JobsDeepSearch({
                     onClick={() => setSelectedSearchJobIndex(isSelected ? null : idx)}
                   >
                     <div className="flex justify-between items-start gap-1">
-                      {onToggleBatchSelect && (
-                        <input
-                          type="checkbox"
-                          checked={isBatchSelected}
-                          onChange={(e) => {
-                            e.stopPropagation();
-                            onToggleBatchSelect(idx);
-                          }}
-                          onClick={(e) => e.stopPropagation()}
-                          className="mt-1 mr-2 rounded border-slate-300 text-indigo-600 focus:ring-indigo-500 w-3.5 h-3.5 flex-none"
-                          title="Select for batch tailoring"
-                        />
-                      )}
+                      <input
+                        type="checkbox"
+                        checked={isBatchSelected}
+                        onChange={(e) => {
+                          e.stopPropagation();
+                          toggleBatchSelect(job.id);
+                        }}
+                        onClick={(e) => e.stopPropagation()}
+                        className="mt-1 mr-2 rounded border-slate-300 text-indigo-600 focus:ring-indigo-500 w-3.5 h-3.5 flex-none"
+                        title="Select for batch tailoring"
+                      />
                       <div>
                         <h4 className="text-xs font-bold text-slate-900 dark:text-white leading-tight">{job.title}</h4>
                         <p className="text-[11px] font-medium text-slate-600 dark:text-slate-300 mt-0.5">
@@ -466,6 +472,7 @@ export default function JobsDeepSearch({
                         )}
                       </div>
                       <div className="flex flex-col items-end gap-1 flex-shrink-0">
+                        <QuickTailorButton job={toQueueJob(job)} />
                         {typeof job.fitScore === 'number' && (
                           <span
                             className={`text-[10px] font-extrabold px-1.5 py-0.5 rounded-md ${

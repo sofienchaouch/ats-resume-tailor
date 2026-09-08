@@ -1,0 +1,29 @@
+# Keep secrets out of the image and out of the build context entirely.
+.env
+.env.*
+!.env.example
+
+# Rebuilt inside the image.
+node_modules
+dist
+server.js
+
+# Not needed to build or run the server. Deliberately conservative: the Vite
+# `@` alias points at the repo root, so anything importable stays in context.
+.git
+.gitignore
+.claude
+.qodo
+graphify-out
+extension
+Dockerfile
+.dockerignore
+docker-compose.yml
+
+# Local tooling / editor noise.
+*.log
+npm-debug.log*
+.DS_Store
+.vscode
+.idea
+bun.lock
